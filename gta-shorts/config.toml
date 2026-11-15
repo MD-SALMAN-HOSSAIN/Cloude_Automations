@@ -1,0 +1,84 @@
+# ============================================================
+#  GTA Shorts Automator - configuration
+#  Everything here is safe to edit. Secrets live in .env
+# ============================================================
+
+[paths]
+# All relative paths are resolved from the project folder.
+data_dir   = "data"        # downloads, caches, database, OAuth token
+output_dir = "Shorts"      # finished clips - open this folder and upload them yourself
+
+[video]
+width              = 1080      # 9:16 output width
+height             = 1920      # 9:16 output height
+fps                = 30
+crf                = 20        # 18 = better quality/larger file, 23 = smaller
+preset             = "medium"
+clip_min_seconds   = 15        # never shorter than this (YouTube Shorts minimum attention window)
+clip_max_seconds   = 55        # never longer than this
+target_min_seconds = 22        # ideal range the AI is asked to hit
+target_max_seconds = 38
+max_clips_per_video = 6        # a 10-min source yields at most this many clips
+crop_padding       = 0.06      # extra headroom around the face (fraction of crop width)
+caption_font       = "Impact"  # bundled Windows font, good for Shorts
+caption_size       = 86
+caption_highlight  = "&H0000E5FF"   # ASS BGR. 00E5FF == yellow #FFE500
+hook_size          = 104
+hook_duration      = 2.8       # seconds the hook text stays on screen
+safe_bottom_px     = 430       # keep captions above the YouTube Shorts UI
+loudness_lufs      = -14.0     # YouTube normalises to about -14 LUFS
+true_peak_db       = -1.5
+
+[whisper]
+model        = "base"     # tiny | base | small | medium. base = fast CPU, small = better words
+device       = "cpu"
+compute_type = "int8"
+language     = "en"
+
+[download]
+max_height         = 1080     # never download 4K, it only slows the crop
+max_minutes        = 45       # ignore anything past this mark (long VODs are not worth it)
+min_minutes        = 2        # refuse sources shorter than this
+max_playlist_items = 20       # a playlist link queues at most this many videos
+cookies_from_browser = ""     # e.g. "chrome" for age-restricted videos
+cookies_file         = ""     # or a cookies.txt path
+
+[gemini]
+model             = "gemini-2.5-flash"
+api_key_env       = "GEMINI_API_KEY"
+candidates        = 12        # how many moments the AI may propose per video
+min_viral_score   = 72        # clips below this are not queued for posting
+max_retries       = 2
+use_video_input   = false     # true = let Gemini watch the video (slower, better picks, more tokens)
+
+[scoring]
+# final_score = ai_weight * AI rubric + (1 - ai_weight) * measured signals
+ai_weight         = 0.60
+min_face_coverage = 0.35      # share of the clip where a face is detected
+max_words_per_sec = 4.6       # above this captions become unreadable
+
+[scheduler]
+times             = ["09:00", "13:00", "18:00", "21:00"]
+timezone          = "Asia/Kolkata"
+buffer_target     = 12        # keep this many rendered clips waiting
+refill_minutes    = 20        # how often the worker tries to top up the buffer
+catch_up          = true      # post once if the PC was off during a slot
+min_gap_minutes   = 150       # never post twice closer than this
+cleanup_days      = 7         # delete working files older than this
+
+[youtube]
+# MANUAL MODE: clips are saved to the Shorts folder, you upload them yourself.
+# Set enabled = true only if you ever want the old auto-posting behaviour.
+enabled        = false
+privacy        = "public"     # public | unlisted | private
+category_id    = "20"         # 20 = Gaming
+made_for_kids  = false
+default_tags   = ["gta6", "gta6shorts", "gta", "gaming", "shorts"]
+# Optional: pin a slot's video to a future publish time instead of publishing instantly.
+schedule_uploads = false
+client_secret_file = "data/client_secret.json"
+token_file         = "data/token.json"
+
+[notify]
+# Optional Discord webhook for "posted / failed" messages. Leave empty to disable.
+discord_webhook = ""
