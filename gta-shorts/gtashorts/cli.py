@@ -110,7 +110,7 @@ def cmd_doctor(cfg: Config, db: DB, args) -> int:
 
                 client = genai.Client(api_key=key)
                 response = client.models.generate_content(
-                    model=cfg.get("gemini.model", "gemini-2.5-flash"), contents="Reply with the single word OK"
+                    model=cfg.get("gemini.model", "gemini-3.5-flash"), contents="Reply with the single word OK"
                 )
                 print(f"gemini live {(response.text or '').strip()[:40]}")
             except Exception as exc:  # noqa: BLE001
@@ -167,7 +167,7 @@ def cmd_doctor(cfg: Config, db: DB, args) -> int:
         slot, when = _next_slot(cfg)
         print(f"next slot   {slot} ({when}), {cfg.timezone()}")
     else:
-        print("posting     manual - upload from the Shorts folder")
+        print("posting     manual - upload from the Ready clips folder")
     print("=" * 58)
     print("READY\n" if ok else "NOT READY - fix the items marked above\n")
     return 0 if ok else 1
@@ -188,7 +188,7 @@ def cmd_add(cfg: Config, db: DB, args) -> int:
         if args.process:
             for source_id in ids:
                 try:
-                    pipeline.process_source(source_id)
+                    pipeline.process_source(source_id, force=bool(getattr(args, "force", False)))
                 except Exception as exc:  # noqa: BLE001
                     print(f"! source #{source_id} failed: {exc}")
     print(f"\n{_ready_count(cfg, db)} clip(s) saved to {cfg.output_dir}")
@@ -210,7 +210,7 @@ def cmd_file(cfg: Config, db: DB, args) -> int:
         print(f"queued source #{source_id}: {path.name}")
         if args.process:
             try:
-                pipeline.process_source(source_id)
+                pipeline.process_source(source_id, force=bool(getattr(args, "force", False)))
             except Exception as exc:  # noqa: BLE001
                 print(f"! source #{source_id} failed: {exc}")
     print(f"\n{_ready_count(cfg, db)} clip(s) saved to {cfg.output_dir}")
@@ -219,8 +219,9 @@ def cmd_file(cfg: Config, db: DB, args) -> int:
 
 def cmd_process(cfg: Config, db: DB, args) -> int:
     pipeline = Pipeline(cfg, db, stub=args.stub)
+    force = bool(getattr(args, "force", False))
     if args.source:
-        pipeline.process_source(int(args.source))
+        pipeline.process_source(int(args.source), force=force)
         return 0
     if args.all:
         while True:
@@ -228,7 +229,7 @@ def cmd_process(cfg: Config, db: DB, args) -> int:
             if not source:
                 break
             try:
-                pipeline.process_source(int(source["id"]))
+                pipeline.process_source(int(source["id"]), force=force)
             except Exception as exc:  # noqa: BLE001
                 print(f"! source #{source['id']} failed: {exc}")
         return 0
@@ -237,7 +238,7 @@ def cmd_process(cfg: Config, db: DB, args) -> int:
         if not source:
             print("nothing queued")
             return 0
-        pipeline.process_source(int(source["id"]))
+        pipeline.process_source(int(source["id"]), force=force)
         return 0
     result = pipeline.refill(max_sources=int(args.sources))
     print(f"\nrefill done ({result} source(s) processed). {_ready_count(cfg, db)} clip(s) ready.")
@@ -249,12 +250,12 @@ def cmd_run(cfg: Config, db: DB, args) -> int:
     ids = pipeline.add_url(args.url)
     for source_id in ids:
         try:
-            pipeline.process_source(source_id)
+            pipeline.process_source(source_id, force=bool(getattr(args, "force", False)))
         except Exception as exc:  # noqa: BLE001
             print(f"! source #{source_id} failed: {exc}")
     if args.post:
         if not cfg.get("youtube.enabled", False):
-            print("automatic posting is off (manual mode) - upload the clips from the Shorts folder")
+            print("automatic posting is off (manual mode) - upload the clips from the Ready clips folder")
         else:
             try:
                 result = post_next(cfg, db, dry_run=args.dry_run)
@@ -611,6 +612,13 @@ def cmd_selftest(cfg: Config, db: DB, args) -> int:
     passed &= _check("stub analyser", len(analysis) >= 1, f"{len(analysis)} moments")
     passed &= _check("hashtag sanitiser", all(h.startswith("#") for h in analysis[0].hashtags) and len(analysis[0].hashtags) == 5)
 
+    # Gemini 3 sometimes answers with a bare JSON array instead of {"moments": [...]}.
+    array_reply = '[{"start": 1, "end": 20, "title": "T", "hook": "H", "description": "D", "hashtags": ["#a"], "scores": {"safety": 10}}]'
+    parsed = analyze._extract_json(array_reply)
+    passed &= _check("gemini array reply parsed", len(parsed.get("moments") or []) == 1, f"{len(parsed.get('moments') or [])} moments")
+    fenced = analyze._extract_json("```json\n{\"moments\": []}\n```\ntrailing prose")
+    passed &= _check("gemini fenced reply parsed", fenced == {"moments": []}, "object extracted")
+
     if args.full:
         print("\n  full pipeline test (this downloads the tiny whisper model on first run)")
         cfg.set("whisper.model", "tiny")
@@ -716,6 +724,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--process", dest="process", action="store_true", default=True)
     p.add_argument("--no-process", dest="process", action="store_false")
     p.add_argument("--stub", action="store_true", help="offline analyser, for testing")
+    p.add_argument("--force", action="store_true", help="re-render even if the link was already processed")
     p.set_defaults(func=cmd_add)
 
     p = sub.add_parser("file", help="queue your own local video files (no download)")
@@ -723,6 +732,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--process", dest="process", action="store_true", default=True)
     p.add_argument("--no-process", dest="process", action="store_false")
     p.add_argument("--stub", action="store_true")
+    p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_file)
 
     p = sub.add_parser("process", help="turn queued sources into clips")
@@ -731,6 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true")
     p.add_argument("--sources", type=int, default=3, help="max sources to process in this run")
     p.add_argument("--stub", action="store_true")
+    p.add_argument("--force", action="store_true", help="re-render even if the source was already processed")
     p.set_defaults(func=cmd_process)
 
     p = sub.add_parser("run", help="add a link, make clips, optionally post the best one")
@@ -738,6 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--post", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--stub", action="store_true")
+    p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("queue", help="list rendered clips waiting to post")

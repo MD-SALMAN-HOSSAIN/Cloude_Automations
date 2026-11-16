@@ -2,7 +2,7 @@
 
 Paste a gameplay link → it downloads the video, transcribes it, finds the moments most likely to
 go viral, cuts them to 9:16 with face tracking, burns in captions + a hook, scores every clip, and
-saves the good ones to the **Shorts** folder on this PC.
+saves them to the **Ready clips** folder on this PC.
 
 **Posting is manual by design.** You open the folder, watch the clips, and upload the ones you like
 to YouTube yourself. No Google Cloud project, no OAuth, no API upload quota.
@@ -12,7 +12,7 @@ Runs fully local. Python + FFmpeg + a free Gemini API key. No Docker, no WSL, no
 ```
 link ──► download ──► whisper words ──► Gemini picks + writes ──► 9:16 face-tracked render
                                                                         │
-                                              Shorts\<date>\*.mp4 ◄──────┘
+                                              Ready clips\<date>\*.* ◄────┘
                                                         │
                                               you upload to YouTube
 ```
@@ -64,28 +64,29 @@ The free tier is enough: picking moments from a 10-minute video is a few thousan
 2. Double-click **`Add Link.cmd`**
 3. Paste the YouTube link → Enter
 
-It downloads, transcribes, asks Gemini for the best moments, renders them, and opens the **Shorts**
-folder when it finishes. Processing a 10-minute video takes roughly 10–20 minutes on this PC.
+It downloads, transcribes, asks Gemini for the best moments, renders them, and opens the
+**Ready clips** folder when it finishes. Processing a 10-minute video takes roughly 10–20 minutes.
 
 You can also drag a **local video file** onto `Add Link.cmd` (your own recording — no download).
 
 ### What you get per clip
 
 ```
-Shorts\2026-11-15\2026-11-15-00123-best-moment-ever.mp4   ← the vertical Short
-Shorts\2026-11-15\2026-11-15-00123-best-moment-ever.jpg   ← thumbnail
-Shorts\2026-11-15\2026-11-15-00123-best-moment-ever.txt   ← title, description, hashtags
-Shorts\2026-11-15\2026-11-15-00123-best-moment-ever.json  ← scores + checks + source timestamps
+Ready clips\2026-11-15\2026-11-15-00123-best-moment-ever.mp4   ← the vertical Short
+Ready clips\2026-11-15\2026-11-15-00123-best-moment-ever.jpg   ← thumbnail
+Ready clips\2026-11-15\2026-11-15-00123-best-moment-ever.txt   ← title, description, hashtags
+Ready clips\2026-11-15\2026-11-15-00123-best-moment-ever.json  ← scores + checks + source timestamps
 ```
 
-Only clips that pass the viral gate (score ≥ 72) are saved here. The rest go to
-`data\rejected\` so you can inspect why they failed.
+Every shortlisted moment is saved (up to 6 per video), even if it scores below 72 — the score is
+printed in the `.txt` so you can pick the best ones yourself. The only clips withheld are ones
+Gemini flags as unsafe (safety ≤ 2/10); those go to `data\rejected\`.
 
 Command-line equivalent:
 
 ```powershell
 .\shorts.cmd add "https://youtu.be/XXXXXXXXXXX"
-.\shorts.cmd open          # open the Shorts folder
+.\shorts.cmd open          # open the Ready clips folder
 .\shorts.cmd queue         # list saved clips + scores
 .\shorts.cmd show 4        # full scorecard for clip #4
 ```
@@ -94,7 +95,7 @@ Command-line equivalent:
 
 ## 4. Upload to YouTube manually (2 minutes per clip)
 
-1. Open the **Shorts** folder (it opens automatically after each run).
+1. Open the **Ready clips** folder (it opens automatically after each run).
 2. Watch the `.mp4`. Delete anything you would not watch yourself.
 3. Go to <https://studio.youtube.com> → **Create → Upload videos** → pick the `.mp4`.
 4. Copy the **title** from the `.txt`, paste the **description + hashtags**.
@@ -180,14 +181,14 @@ Rules that keep the channel alive:
 | Crop path | `gtashorts/ffmpeg.py` | piecewise-linear `if(lt(t,…))` expression so FFmpeg pans the 9:16 window |
 | Captions | `gtashorts/assfile.py` | hook card (top, 2.8 s) + word-highlight caption cards (safe area) |
 | Render | `gtashorts/ffmpeg.py` | trim → 30 fps → tracked crop → 1080×1920 → subtitles → H.264 CRF 20 + AAC 192k, faststart |
-| Score | `gtashorts/pipeline.py` | measured signals + Gemini rubric → gate at 72 → saved or rejected |
-| Output | `gtashorts/pipeline.py` | moves the MP4/JPG/TXT/JSON into `Shorts\<date>\` |
+| Score | `gtashorts/pipeline.py` | measured signals + Gemini rubric → score; clips saved either way, unsafe withheld |
+| Output | `gtashorts/pipeline.py` | moves the MP4/JPG/TXT/JSON into `Ready clips\<date>\` |
 
 ### Useful knobs in `config.toml`
 
 ```toml
 [paths]
-output_dir = "Shorts"      # where finished clips are saved (can be an absolute path)
+output_dir = "Ready clips" # where finished clips are saved (can be an absolute path)
 
 [video]
 target_min_seconds = 22    # ideal clip length window
@@ -211,7 +212,7 @@ enabled = false            # keep false for manual posting
 ```
 
 To save clips to another drive, set an absolute path, e.g.
-`output_dir = "D:/YouTube Shorts"`. Restart nothing — the next run uses it.
+`output_dir = "D:/YouTube/Ready clips"`. Restart nothing — the next run uses it.
 
 Jump starting the folder: `shorts open`.
 
@@ -225,12 +226,15 @@ Jump starting the folder: `shorts open`.
 | Gemini 429 / quota | free-tier daily limit; wait, or enable billing on the key |
 | Gemini returns no moments | video may have no speech/action; try a livelier source |
 | `ffmpeg not found` | `winget install Gyan.FFmpeg`, then reopen the terminal |
-| No clips in Shorts folder | all scored below 72 → check `data\rejected\`; lower `min_viral_score` to 65 |
+| No clips in Ready clips folder | check the console for `Gemini ... failed`; the model name may be retired → set `gemini.model` to `gemini-3.5-flash` |
+| Gemini 404 model not found | Google retires models: pick another from <https://ai.google.dev/gemini-api/docs/models> and edit `gemini.model` |
+| Clip scores look low | raise `gemini.min_viral_score`? No — the score is fixed by the video; feed livelier footage |
 | Whisper is slow | `whisper.model = "tiny"` in config, or feed shorter videos |
 | Face crops badly | raise `crop_padding` (e.g. 0.10); keep `min_face_coverage` at 0.35 |
 | Link won't download | update yt-dlp: `python -m pip install -U yt-dlp`; age-restricted needs cookies |
-| Disk filling up | `shorts cleanup` (working files) and delete old folders in `Shorts\` |
+| Disk filling up | `shorts cleanup` (working files) and delete old folders in `Ready clips\` |
 | Need to retry failures | `shorts retry` |
+| Pasted the same link twice | it is skipped automatically (no duplicates); re-cut it with `shorts process --source N --force` |
 | Check what is queued | `shorts status`, `shorts queue`, `shorts logs` |
 
 ---
@@ -241,8 +245,8 @@ Jump starting the folder: `shorts open`.
 shorts doctor [--deep]          health check (ffmpeg, key, disk)
 shorts add <links...>           download + cut a YouTube link now
 shorts file <paths...>          cut your own local recording
-shorts process [--all|--source N]  render queued sources
-shorts open                     open the Shorts folder
+shorts process [--all|--source N] [--force]  render queued sources (--force re-renders a link)
+shorts open                     open the Ready clips folder
 shorts queue                    list saved clips + scores
 shorts show <id>                full scorecard, checks and metadata
 shorts status                   queue health and recent events
@@ -279,13 +283,13 @@ gta-shorts\
 ├─ config.toml             ← all tuning knobs
 ├─ .env                    ← your Gemini key (never share)
 ├─ gtashorts\              ← the automation
-├─ Shorts\<date>\          ← finished MP4 + JPG + TXT + JSON
+├─ Ready clips\<date>\     ← finished MP4 + JPG + TXT + JSON
 └─ data\
    ├─ shorts.db            ← sources, clips, scores, events
    ├─ downloads\           ← source videos (delete these to save space)
    ├─ cache\               ← transcripts + face tracks
    ├─ work\                ← temporary render folders
-   ├─ rejected\            ← clips that failed the viral gate (inspect them!)
+   ├─ rejected\            ← clips withheld for safety (rare)
    └─ models\              ← whisper weights + YuNet face detector
 ```
 

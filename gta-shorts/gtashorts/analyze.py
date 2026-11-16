@@ -13,11 +13,12 @@ EMOTION_WORDS = {
     "fail", "funny", "hilarious", "police", "chase", "explosion", "clutch", "best",
     "worst", "record", "secret", "hidden", "trap", "rage", "speedrun", "glitch",
     "caught", "busted", "arrest", "fight", "boss", "heist", "money", "rich",
+    "close", "impossible", "lucky", "trolled", "destroyed", "escaped", "broke",
 }
 
-SYSTEM_PROMPT = """You are a YouTube Shorts editor who has produced hundreds of millions of views.
-You pick short moments from long gaming videos that will stop the scroll in the first second.
-You are ruthless: a boring moment that is technically fine is a rejection."""
+SYSTEM_PROMPT = """You are a viral YouTube Shorts strategist and editor for gaming clips (especially GTA-style chaos, fails, chases, stunts, and shocking moments).
+Your job is to find moments that maximize watch time, rewatches, and shares in the first seconds.
+Prioritize scroll-stopping hooks, instant context, high emotion, fast payoff, and loopability. Be ruthless: if it is not gripping immediately, reject it."""
 
 PROMPT = """Here is the transcript of a gameplay video titled: "{title}"
 Source duration: {duration:.0f} seconds. Language: {language}.
@@ -25,30 +26,31 @@ Source duration: {duration:.0f} seconds. Language: {language}.
 TRANSCRIPT (segments, seconds):
 {transcript}
 
-Pick the {count} best moments for vertical YouTube Shorts.
+Pick the {count} BEST moments for vertical YouTube Shorts with the highest chance to go viral quickly.
 
 Hard rules for every moment:
-1. Duration {min_dur}-{max_dur} seconds. Aim for {target_min}-{target_max} seconds.
-2. Start exactly where the action/sentence starts - no wind-up, no "so anyway". The first 0.5s must already be interesting.
-3. End on the payoff or the funniest/biggest beat, not after it.
-4. Moments must not overlap each other.
-5. Only use timestamps that exist in the transcript and do not invent events.
-6. Skip anything that needs missing context, is mostly silence, or is offensive/hateful/dangerous.
+1. Duration {min_dur}-{max_dur} seconds. Aim for {target_min}-{target_max} seconds (short, high-retention clips usually perform better).
+2. The first 0.5 seconds must hit hard: shock, question, chaos, funny reaction, stakes, or a big visual/action beat. No slow setup, no "so anyway", no dead air.
+3. Start right at the moment tension/action begins (a tiny lead-in is fine, but never before it gets interesting).
+4. End on the payoff, punchline, explosion/chase peak, or cliffhanger beat - not after the energy drops.
+5. Moments must not overlap each other.
+6. Only use timestamps that exist in the transcript and do not invent events.
+7. Skip anything confusing without context, mostly silent, repetitive, or offensive/hateful/dangerous.
 
 Ranking rubric (0-10 each, be honest and use the full range):
-- hook: does second one create a question or shock?
-- emotion: laughter, tension, surprise, awe?
-- payoff: is there a satisfying end?
-- clarity: does it make sense with zero context?
-- loop: can the last frame lead straight back into the first?
-- safety: advertiser-friendly, no copyrighted music claims, no real people harmed.
+- hook: will the first second stop scrolling?
+- emotion: surprise, laughter, tension, hype, disbelief?
+- payoff: is there a satisfying or shocking outcome?
+- clarity: understandable instantly with zero context?
+- loop: does the ending make people rewatch or flow back to the start?
+- safety: advertiser-friendly and policy-safe.
 
-Write metadata:
-- title: max 70 characters, curiosity + keyword, no clickbait lies, no ALL CAPS except 1-2 words.
-- hook: max 5 words, ALL CAPS, burned on screen for the first ~2.8s. This is the text that stops the scroll.
-- description: 1-2 short sentences + 4-5 hashtags. End with #Shorts.
-- hashtags: exactly 5, each starting with #, lowercase, relevant (game name, topic, #shorts).
-- reason: one sentence explaining why it can go viral.
+Write metadata optimized for discovery and clicks (without lying):
+- title: max 70 characters, curiosity + clear keyword, punchy and specific (what happens). No ALL CAPS except 1-2 words.
+- hook: max 5 words, ALL CAPS, pattern-interrupt text for the first ~3s (example style: "NO WAY THIS HAPPENED", "COP CHASE INSTANT FAIL").
+- description: 1-2 short punchy sentences + 4-5 hashtags total in the text. End with #Shorts. Include a clear reason to watch.
+- hashtags: exactly 5, each starting with #, lowercase, relevant/searchable (include game/topic + #shorts, avoid spammy unrelated tags).
+- reason: one sentence on why this specific moment can get high retention/shares.
 
 Return ONLY valid JSON with this shape:
 {{"moments":[{{"start":0.0,"end":0.0,"title":"","hook":"","description":"","hashtags":["#a","#b","#c","#d","#e"],"scores":{{"hook":0,"emotion":0,"payoff":0,"clarity":0,"loop":0,"safety":0}},"reason":""}}]}}"""
@@ -99,10 +101,32 @@ def _extract_json(text: str) -> dict:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?", "", text)
         text = re.sub(r"```$", "", text).strip()
-    first, last = text.find("{"), text.rfind("}")
-    if first == -1 or last == -1:
-        raise ValueError("no JSON object in Gemini response")
-    return json.loads(text[first : last + 1])
+
+    def _as_dict(value):
+        if isinstance(value, list):
+            return {"moments": value}
+        if isinstance(value, dict):
+            return value
+        raise ValueError(f"unexpected JSON type: {type(value).__name__}")
+
+    # 1) the whole thing is valid JSON (object or array)
+    try:
+        return _as_dict(json.loads(text))
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2) the model sometimes wraps the JSON in prose or emits two objects in a
+    #    row. raw_decode the first complete value we can find.
+    decoder = json.JSONDecoder()
+    for opener in ("{", "["):
+        idx = text.find(opener)
+        while idx != -1:
+            try:
+                value, _end = decoder.raw_decode(text[idx:])
+                return _as_dict(value)
+            except Exception:  # noqa: BLE001
+                idx = text.find(opener, idx + 1)
+    raise ValueError("no JSON object in Gemini response")
 
 
 def _client(cfg):
@@ -170,7 +194,7 @@ def _ask_gemini(prompt: str, cfg) -> str:
     from google.genai import types
 
     client = _client(cfg)
-    model = cfg.get("gemini.model", "gemini-2.5-flash")
+    model = cfg.get("gemini.model", "gemini-3.5-flash")
     contents: list = [prompt]
     uploaded = None
     if cfg.get("gemini.use_video_input"):
@@ -184,6 +208,10 @@ def _ask_gemini(prompt: str, cfg) -> str:
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.75,
                 response_mime_type="application/json",
+                max_output_tokens=8192,
+                # Gemini 3 thinks by default; disable it so a 12-moment JSON reply
+                # does not sit for minutes (and cost extra tokens).
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         return response.text or ""
@@ -240,17 +268,46 @@ def _parse_moments(raw: str, info: MediaInfo, transcript: dict, cfg) -> list[Mom
 def _snap(start: float, end: float, words: list[dict], total: float, min_dur: float, max_dur: float):
     start = clamp(start, 0, max(0, total - 1))
     end = clamp(end, 0, total)
+
     if words:
-        # start on the first word that begins at/after (start - 0.6s)
-        candidates = [w for w in words if start - 0.6 <= w["start"] <= start + 1.0]
+        # Pick a start word near the requested moment, but keep a small pre-roll so the
+        # clip doesn't feel like it cuts in mid-thought/action.
+        candidates = [w for w in words if start - 0.8 <= float(w["start"]) <= start + 1.2]
         if candidates:
-            start = candidates[0]["start"]
-        candidates_end = [w for w in words if end - 1.2 <= w["end"] <= end + 0.8]
+            first = min(candidates, key=lambda w: abs(float(w["start"]) - start))
+            start = max(0.0, float(first["start"]) - 0.25)
+
+        # Prefer to end on a word boundary with a little tail room.
+        candidates_end = [w for w in words if end - 1.5 <= float(w.get("end", w["start"])) <= end + 1.0]
         if candidates_end:
-            end = candidates_end[-1]["end"] + 0.15
+            last = max(candidates_end, key=lambda w: float(w.get("end", w["start"])))
+            end = float(last.get("end", last["start"])) + 0.35
+
+    # Enforce minimum duration, trying to extend to a natural word ending when possible.
     if end - start < min_dur:
-        end = min(total, start + min_dur)
+        target_end = min(total, start + min_dur)
+        if words:
+            after = [float(w.get("end", w["start"])) for w in words if float(w.get("end", w["start"])) >= target_end - 0.2]
+            if after:
+                target_end = min(total, min(after) + 0.35)
+        end = max(end, target_end)
+
+    # Enforce maximum duration, preferring to cut at a word boundary instead of mid-word.
     if end - start > max_dur:
+        limit = start + max_dur
+        if words:
+            before = [float(w.get("end", w["start"])) for w in words if start + min_dur * 0.6 <= float(w.get("end", w["start"])) <= limit]
+            if before:
+                end = max(before) + 0.25
+            else:
+                end = limit
+        else:
+            end = limit
+
+    # Final clamp and sanity checks.
+    start = clamp(start, 0, max(0, total - 0.5))
+    end = clamp(end, start + 0.5, total)
+    if end - start > max_dur + 0.35:
         end = start + max_dur
     if end - start < min_dur - 0.25:
         return None, None

@@ -1,6 +1,8 @@
 .env
 data/
 output/
+Shorts/
+Ready clips/
 fonts/
 *.log
 __pycache__/

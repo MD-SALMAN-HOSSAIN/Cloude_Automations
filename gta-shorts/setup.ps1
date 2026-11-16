@@ -52,6 +52,6 @@ Write-Host "`n=== Setup finished ===" -ForegroundColor Green
 Write-Host "Next steps:"
 Write-Host "  1. Put your Gemini key in .env"
 Write-Host "  2. Double-click Add Link.cmd and paste a YouTube link"
-Write-Host "  3. Upload the finished clips from the Shorts folder yourself"
+Write-Host "  3. Upload the finished clips from the 'Ready clips' folder yourself"
 Write-Host "     (posting is manual by design - no YouTube login needed)"
 Write-Host ""

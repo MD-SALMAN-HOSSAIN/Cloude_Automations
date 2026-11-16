@@ -6,7 +6,7 @@
 [paths]
 # All relative paths are resolved from the project folder.
 data_dir   = "data"        # downloads, caches, database, OAuth token
-output_dir = "Shorts"      # finished clips - open this folder and upload them yourself
+output_dir = "Ready clips" # finished clips - open this folder and upload them yourself
 
 [video]
 width              = 1080      # 9:16 output width
@@ -14,17 +14,17 @@ height             = 1920      # 9:16 output height
 fps                = 30
 crf                = 20        # 18 = better quality/larger file, 23 = smaller
 preset             = "medium"
-clip_min_seconds   = 15        # never shorter than this (YouTube Shorts minimum attention window)
-clip_max_seconds   = 55        # never longer than this
-target_min_seconds = 22        # ideal range the AI is asked to hit
-target_max_seconds = 38
+clip_min_seconds   = 12        # keep clips punchy (shorts retention favors fast pacing)
+clip_max_seconds   = 45        # avoid long tails that hurt completion rate
+target_min_seconds = 18        # ideal range the AI is asked to hit
+target_max_seconds = 32
 max_clips_per_video = 6        # a 10-min source yields at most this many clips
 crop_padding       = 0.06      # extra headroom around the face (fraction of crop width)
 caption_font       = "Impact"  # bundled Windows font, good for Shorts
-caption_size       = 86
+caption_size       = 90
 caption_highlight  = "&H0000E5FF"   # ASS BGR. 00E5FF == yellow #FFE500
-hook_size          = 104
-hook_duration      = 2.8       # seconds the hook text stays on screen
+hook_size          = 112
+hook_duration      = 3.0       # seconds the hook text stays on screen
 safe_bottom_px     = 430       # keep captions above the YouTube Shorts UI
 loudness_lufs      = -14.0     # YouTube normalises to about -14 LUFS
 true_peak_db       = -1.5
@@ -44,10 +44,10 @@ cookies_from_browser = ""     # e.g. "chrome" for age-restricted videos
 cookies_file         = ""     # or a cookies.txt path
 
 [gemini]
-model             = "gemini-2.5-flash"
+model             = "gemini-3.5-flash"
 api_key_env       = "GEMINI_API_KEY"
-candidates        = 12        # how many moments the AI may propose per video
-min_viral_score   = 72        # clips below this are not queued for posting
+candidates        = 15        # shortlist more options to improve odds of a viral pick
+min_viral_score   = 70        # save more strong candidates for manual posting/tests
 max_retries       = 2
 use_video_input   = false     # true = let Gemini watch the video (slower, better picks, more tokens)
 
@@ -67,7 +67,7 @@ min_gap_minutes   = 150       # never post twice closer than this
 cleanup_days      = 7         # delete working files older than this
 
 [youtube]
-# MANUAL MODE: clips are saved to the Shorts folder, you upload them yourself.
+# MANUAL MODE: clips are saved to the "Ready clips" folder, you upload them yourself.
 # Set enabled = true only if you ever want the old auto-posting behaviour.
 enabled        = false
 privacy        = "public"     # public | unlisted | private

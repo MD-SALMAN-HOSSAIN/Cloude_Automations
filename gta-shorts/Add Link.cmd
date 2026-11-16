@@ -52,8 +52,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo Opening the folder with your finished Shorts...
-start "" "%~dp0Shorts"
+echo Opening the Ready clips folder...
+if not exist "%~dp0Ready clips" mkdir "%~dp0Ready clips"
+start "" "%~dp0Ready clips"
 echo.
 echo Each clip has .mp4 (video), .jpg (thumbnail) and .txt (title + description + hashtags).
 echo Upload the .mp4 to YouTube yourself - posting is manual by design.

@@ -91,10 +91,22 @@ class Pipeline:
         finally:
             self._lock.release()
 
-    def process_source(self, source_id: int) -> dict:
+    def process_source(self, source_id: int, force: bool = False) -> dict:
         source = self.db.source(source_id)
         if not source:
             raise RuntimeError(f"source #{source_id} not found")
+
+        # Pasting the same link twice should not re-render and duplicate clips.
+        if not force and source.get("status") == "done":
+            done = self.db.query(
+                "SELECT id FROM clips WHERE source_id = ? AND status = 'ready' ORDER BY id", (source_id,)
+            )
+            if done:
+                LOG.info(
+                    "source #%d already processed (%d clip(s)) - skipping. Use --force to redo it.",
+                    source_id, len(done),
+                )
+                return {"source_id": source_id, "clips": [int(c["id"]) for c in done], "skipped": True}
 
         attempts = int(source.get("attempts") or 0) + 1
         self.db.update_source(source_id, status="processing", attempts=attempts, error=None)
@@ -300,15 +312,24 @@ class Pipeline:
             "platform": "youtube",
         }
 
-        if final_score < min_score:
+        # Only genuinely unsafe moments are withheld (YouTube advertiser guidelines).
+        safety = float((moment.scores or {}).get("safety", 10) or 0)
+        if safety and safety <= 2:
             rejected = self.cfg.data_dir / "rejected"
             rejected.mkdir(parents=True, exist_ok=True)
             slug = f"{date.today().isoformat()}-{int(moment.start)}-{slugify(moment.title, 32)}"
             shutil.move(str(out_path), str(rejected / f"{slug}.mp4"))
             self.db.update_candidate(candidate_id, status="rejected", final_score=final_score)
-            self.db.event("info", f"clip rejected (score {final_score} < {min_score}): {moment.title}")
+            self.db.event("warning", f"unsafe clip withheld (safety {safety:.0f}/10): {moment.title}")
             shutil.rmtree(work, ignore_errors=True)
             return None
+
+        if final_score < min_score:
+            # Manual mode: save everything the AI shortlisted and let the user decide.
+            LOG.info(
+                "clip %.1f-%.1f scored %.1f (< %.0f) - saving anyway for manual review",
+                moment.start, moment.end, final_score, min_score,
+            )
 
         slug = f"{date.today().isoformat()}-{int(moment.start):05d}-{slugify(moment.title, 40)}"
         dest_dir = self.cfg.output_dir / date.today().isoformat()
