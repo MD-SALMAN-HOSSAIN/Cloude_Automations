@@ -13,7 +13,10 @@ class DownloadError(RuntimeError):
     pass
 
 
-def _base_opts(cfg) -> dict:
+_AUTO_BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium")
+
+
+def _base_opts(cfg, browser: str | None = None) -> dict:
     downloads = cfg.data_dir / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
     max_height = int(cfg.get("download.max_height", 1080))
@@ -34,18 +37,68 @@ def _base_opts(cfg) -> dict:
         "windowsfilenames": True,
         "overwrites": False,
     }
-    browser = (cfg.get("download.cookies_from_browser") or "").strip()
-    if browser:
-        opts["cookiesfrombrowser"] = (browser,)
+    configured_browser = (cfg.get("download.cookies_from_browser") or "").strip()
     cookies_file = (cfg.get("download.cookies_file") or "").strip()
-    if cookies_file:
+    use_browser = browser if browser is not None else configured_browser
+    if cookies_file and browser is None:
         opts["cookiefile"] = cookies_file
+    elif use_browser:
+        opts["cookiesfrombrowser"] = (use_browser,)
     return opts
+
+
+def _needs_cookies(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return (
+        ("age" in low and ("confirm" in low or "restricted" in low or "verification" in low or "inappropriate" in low))
+        or "sign in to confirm" in low
+        or "sign in to confirm your age" in low
+        or "cookies" in low and "sign in" in low
+        or "authentication" in low and ("age" in low or "sign in" in low)
+    )
+
+
+def _extract_with_cookie_fallback(url: str, opts: dict, cfg, *, download: bool):
+    import yt_dlp
+
+    configured_browser = (cfg.get("download.cookies_from_browser") or "").strip()
+    cookies_file = (cfg.get("download.cookies_file") or "").strip()
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=download), ydl
+    except Exception as exc:  # noqa: BLE001
+        if not _needs_cookies(exc):
+            raise
+        if configured_browser or cookies_file:
+            raise
+        # Auto-retry with browser cookies so age-restricted/public videos that need
+        # verification can still be processed without manual config changes.
+        last_exc = exc
+        for browser in _AUTO_BROWSERS:
+            retry_opts = dict(opts)
+            retry_opts["cookiesfrombrowser"] = (browser,)
+            retry_opts.pop("cookiefile", None)
+            try:
+                LOG.info("age/sign-in check hit; retrying with cookies from %s", browser)
+                with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                    info = ydl.extract_info(url, download=download)
+                    LOG.info("cookies from %s worked", browser)
+                    return info, ydl
+            except Exception as retry_exc:  # noqa: BLE001
+                last_exc = retry_exc
+                if not _needs_cookies(retry_exc):
+                    # Different failure after supplying cookies; stop guessing browsers.
+                    raise
+        raise DownloadError(
+            "YouTube requires age/sign-in verification and automatic browser-cookie fallback did not work. "
+            "Close your browser and set download.cookies_from_browser (e.g. \"chrome\" or \"edge\") in config.toml, "
+            "or provide download.cookies_file, or queue a local copy with: shorts file <path>. "
+            f"Original error: {str(last_exc)[:300]}"
+        ) from last_exc
 
 
 def inspect(url: str, cfg) -> dict:
     """Metadata only - title, duration, id. Also expands playlists (capped)."""
-    import yt_dlp
 
     if not _URL_RE.match(url or ""):
         raise DownloadError(f"that does not look like a URL: {url!r}")
@@ -54,11 +107,12 @@ def inspect(url: str, cfg) -> dict:
     opts["noplaylist"] = False
     opts["extract_flat"] = "in_playlist"
     opts["playlistend"] = int(cfg.get("download.max_playlist_items", 20) or 20)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-        except Exception as exc:  # noqa: BLE001
-            raise DownloadError(_friendly_error(exc)) from exc
+    try:
+        info, _ydl = _extract_with_cookie_fallback(url, opts, cfg, download=False)
+    except DownloadError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DownloadError(_friendly_error(exc)) from exc
 
     if info.get("_type") == "playlist":
         entries = [e for e in (info.get("entries") or []) if e]
@@ -91,8 +145,6 @@ def inspect(url: str, cfg) -> dict:
 
 
 def download(url: str, cfg, video_id: str | None = None) -> dict:
-    import yt_dlp
-
     max_minutes = float(cfg.get("download.max_minutes", 180))
     opts = _base_opts(cfg)
     if video_id:
@@ -106,26 +158,28 @@ def download(url: str, cfg, video_id: str | None = None) -> dict:
                 return {"path": existing, "video_id": video_id, "title": existing.stem, "duration": 0}
 
     LOG.info("downloading %s", url)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=True)
-        except Exception as exc:  # noqa: BLE001
-            raise DownloadError(_friendly_error(exc)) from exc
-        if info.get("_type") == "playlist":
-            entries = [e for e in (info.get("entries") or []) if e]
-            if not entries:
-                raise DownloadError("playlist is empty")
-            info = entries[0]
-        path = Path(ydl.prepare_filename(info))
-        if not path.exists():
-            candidates = sorted(
-                (cfg.data_dir / "downloads").glob(f"{info.get('id')}.*"),
-                key=lambda p: p.stat().st_size,
-                reverse=True,
-            )
-            if not candidates:
-                raise DownloadError("download finished but the file is missing")
-            path = candidates[0]
+    try:
+        info, ydl = _extract_with_cookie_fallback(url, opts, cfg, download=True)
+    except DownloadError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DownloadError(_friendly_error(exc)) from exc
+
+    if info.get("_type") == "playlist":
+        entries = [e for e in (info.get("entries") or []) if e]
+        if not entries:
+            raise DownloadError("playlist is empty")
+        info = entries[0]
+    path = Path(ydl.prepare_filename(info))
+    if not path.exists():
+        candidates = sorted(
+            (cfg.data_dir / "downloads").glob(f"{info.get('id')}.*"),
+            key=lambda p: p.stat().st_size,
+            reverse=True,
+        )
+        if not candidates:
+            raise DownloadError("download finished but the file is missing")
+        path = candidates[0]
 
     duration = float(info.get("duration") or 0)
     if max_minutes and duration and duration > max_minutes * 60:
