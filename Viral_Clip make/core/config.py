@@ -27,7 +27,7 @@ def default_settings() -> dict:
         "general.max_seconds": 45,
         "general.language": "",
         "general.max_minutes": 45,
-        "general.download_height": 1080,
+        "general.download_height": 720,
         "video.width": 1080,
         "video.height": 1920,
         "video.fps": 30,

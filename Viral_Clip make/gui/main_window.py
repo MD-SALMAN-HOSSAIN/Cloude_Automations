@@ -58,17 +58,20 @@ MODES = {
     "fast": {
         "whisper": "tiny", "crf": 26, "preset": "veryfast", "face": False,
         "normalize": False, "face_interval": 1.0, "candidates": 300,
-        "desc": "Fastest — small model, simpler crop, quicker render. Great for previews.",
+        "download_height": 480,
+        "desc": "Fastest — smaller download and speech model, simpler crop, quicker render.",
     },
     "balanced": {
         "whisper": "base", "crf": 20, "preset": "medium", "face": True,
         "normalize": True, "face_interval": 0.5, "candidates": 600,
-        "desc": "Recommended — tracked framing, word captions and clean audio.",
+        "download_height": 720,
+        "desc": "Recommended — quick 720p download, tracked framing and clean audio.",
     },
     "best": {
         "whisper": "small", "crf": 16, "preset": "slow", "face": True,
         "normalize": True, "face_interval": 0.35, "candidates": 900,
-        "desc": "Highest quality — more accurate words, cleaner picture, slower render.",
+        "download_height": 1080,
+        "desc": "Highest quality — 1080p source, more accurate words, slower render.",
     },
 }
 
@@ -377,6 +380,7 @@ class App:
         save_card.pack(fill="x")
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     def _load_advanced(self):
         self._on_provider()
         self._on_aspect()
@@ -412,6 +416,7 @@ class App:
         self.norm_var.set(preset["normalize"])
         self.cfg.set("video.crf", preset["crf"])
         self.cfg.set("video.preset", preset["preset"])
+        self.cfg.set("general.download_height", preset["download_height"])
         self.cfg.set("speed.face_interval", preset["face_interval"])
         self.cfg.set("speed.candidates", preset["candidates"])
         self.mode_desc.configure(text=preset["desc"])
@@ -593,7 +598,7 @@ class App:
                     messagebox.showinfo(
                         "Done!",
                         f"Created {len(self.result['clips'])} clips!\n\n{self.result['output_dir']}\n\n"
-                        "Open the folder to watch and upload them.",
+                        "Open the folder to watch your clips.",
                     )
                     if self.checking:
                         self.root.after(80, self._poll)

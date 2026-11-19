@@ -29,9 +29,14 @@ link / file  →  local Whisper transcript  →  local viral-moment scoring  →
 | Rendering | FFmpeg (free, open source) |
 
 The only network access is:
-1. `yt-dlp` downloading the video you asked for.
-2. A **one-time** download of the Whisper speech model (~150 MB for `base`) and the 230 KB face
-   model, both cached afterwards.
+1. `yt-dlp` downloading the video you asked for (cached on disk, so the same link is never
+   downloaded twice).
+2. A **one-time** download of the Whisper speech model (~150 MB for `base`, ~75 MB for `tiny`)
+   and the 230 KB face model, both cached afterwards.
+
+Downloads are faster now: **Balanced** uses a single-file 720p format by default (no separate audio
+download or merge), **Fast** uses 480p, and **Best** uses 1080p. The progress bar and log show live
+percentage, speed and time left while downloading.
 
 ---
 
@@ -107,9 +112,6 @@ downloads the speech model once.
   these choices (API key/provider/model, aspect ratio and speed mode) to disk immediately, ready to
   be used during every future creation. You'll see a green "✓ Saved" confirmation. Settings are also
   saved automatically whenever you press **MAKE VIRAL CLIPS**.
-
-The window uses a modern rounded dark UI (CustomTkinter) with hover effects, animated fade-in,
-segmented controls and toggles.
 - **Output size** — choose `9:16` (Shorts/TikTok/Reels), `1:1`, `4:5`, `3:4`, `16:9`, or a **Custom**
   width × height. Captions, cropping and thumbnails all adapt to the chosen size.
 - **Speed / Quality** — pick a mode:
@@ -118,6 +120,9 @@ segmented controls and toggles.
   - **Best quality** — more accurate transcription and a cleaner final picture, slower render.
   The mode sets sensible defaults; you can still fine-tune the speech model and checkboxes in the
   **Make Clips** tab afterwards.
+
+The window uses a modern rounded dark UI (CustomTkinter) with hover effects, animated fade-in,
+segmented controls and toggles.
 
 ---
 

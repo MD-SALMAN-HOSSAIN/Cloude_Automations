@@ -1,0 +1,12 @@
+# All of these are free and open source. No paid API is used anywhere.
+yt-dlp>=2025.1.15
+faster-whisper>=1.0.3
+onnxruntime>=1.18.0
+opencv-python-headless>=4.10.0
+numpy>=1.26,<3
+Pillow>=10.3.0
+customtkinter>=5.2.0
+requests>=2.31.0
+
+# Only needed to BUILD the .exe (build.ps1 installs it automatically):
+pyinstaller>=6.0

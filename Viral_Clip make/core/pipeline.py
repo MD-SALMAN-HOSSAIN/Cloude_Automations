@@ -53,10 +53,10 @@ def _apply_aspect(cfg, log: Logger):
 
 
 def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
-    """Full local pipeline: source -> scored 9:16 clips ready to upload."""
+    """Full local pipeline: source -> scored vertical clips ready to watch."""
     # 1. Resolve the source --------------------------------------------------
     _report(progress, 2, "Resolving video source...")
-    video = fetch(source, cfg, log)
+    video = fetch(source, cfg, log, progress=progress)
     width, height = _apply_aspect(cfg, log)
 
     # 2. Inspect -------------------------------------------------------------
