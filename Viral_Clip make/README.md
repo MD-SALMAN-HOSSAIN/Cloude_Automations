@@ -80,9 +80,15 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
    - **Clips per video** — how many shorts to make (1–15).
    - **Min / Max seconds** — clip length window (e.g. 12–45 s).
    - **Speech model** — `tiny` (fastest) → `base` (recommended) → `small` / `medium` (more accurate, slower).
-   - **Language** — leave blank for auto-detect, or type `en`, `es`, etc.
+     Press the **?** button in the app for a full plain-English explanation of each model.
+   - **Language** — leave blank for auto-detect, or type a two-letter code such as `en`, `hi`, `es`.
+   - **Video framing** — **Fit whole frame (blurred)** is the default: the entire video stays visible
+     in a vertical Short with a blurred background, so gameplay or full-screen content is never cut.
+     Choose **Fit whole frame (black bars)** for clean bars, or **Follow subject (crops sides)** when
+     the clip is a person talking to camera.
    - **Output folder** — where finished clips are saved.
-   - Toggles for face tracking, captions, hook overlay and audio normalization.
+   - Toggles for face tracking (only active in *Follow subject* mode), captions, hook overlay and
+     audio normalization.
 3. Press **MAKE VIRAL CLIPS**. Watch the progress bar and activity log.
 4. When it finishes, press **Open output folder** and upload the clips you like.
 
@@ -108,16 +114,21 @@ downloads the speech model once.
   **Local** mode it confirms the free engine is ready with no API needed. Changing any key, URL or
   model resets the dot to "Not checked" so you never trust a stale result. The check runs in the
   background, so the window never freezes.
+- **Hardware (GPU / CPU)** — choose **Auto (recommended)**, **CPU only**, or **GPU (NVIDIA)** for
+  speech-to-text, and separately choose **Auto / CPU only / GPU only** for video encoding. The app
+  detects NVIDIA CUDA and FFmpeg hardware encoders (NVENC / QuickSync / AMF) at startup and shows
+  what it found. GPU acceleration can make transcription and rendering several times faster. If a
+  GPU is missing or fails, the app automatically falls back to the free CPU path — no setup needed.
 - **Save settings** — the purple **Save settings** button at the bottom of this tab writes all of
-  these choices (API key/provider/model, aspect ratio and speed mode) to disk immediately, ready to
-  be used during every future creation. You'll see a green "✓ Saved" confirmation. Settings are also
-  saved automatically whenever you press **MAKE VIRAL CLIPS**.
+  these choices (API key/provider/model, hardware, framing, aspect ratio and speed mode) to disk
+  immediately, ready to be used during every future creation. You'll see a green "✓ Saved"
+  confirmation. Settings are also saved automatically whenever you press **MAKE VIRAL CLIPS**.
 - **Output size** — choose `9:16` (Shorts/TikTok/Reels), `1:1`, `4:5`, `3:4`, `16:9`, or a **Custom**
   width × height. Captions, cropping and thumbnails all adapt to the chosen size.
 - **Speed / Quality** — pick a mode:
-  - **Fast (turbo)** — tiny speech model, faster encode, no face tracking. Best for quick previews.
-  - **Balanced** — recommended; tracked framing and clean audio.
-  - **Best quality** — more accurate transcription and a cleaner final picture, slower render.
+  - **Fast (turbo)** — 480p source, tiny speech model, faster encode. Best for quick previews.
+  - **Balanced** — recommended; 720p source, whole-frame vertical framing and clean audio.
+  - **Best quality** — 1080p source, more accurate transcription and a cleaner final picture, slower render.
   The mode sets sensible defaults; you can still fine-tune the speech model and checkboxes in the
   **Make Clips** tab afterwards.
 
@@ -132,7 +143,7 @@ For every clip, in `Output folder\<date>\`:
 
 | File | Contents |
 |---|---|
-| `.mp4` | Finished 1080×1920 vertical clip, H.264 + AAC, captions burned in |
+| `.mp4` | Finished vertical clip (e.g. 1080×1920), H.264 + AAC, captions burned in. By default the whole source frame is visible with a blurred background |
 | `.jpg` | Thumbnail |
 | `.txt` | Title, viral score, hook, source timestamps, description + hashtags |
 | `.json` | Full scorecard and render details |

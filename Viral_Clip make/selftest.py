@@ -40,10 +40,23 @@ def main():
 
     out = work / "clip.mp4"
     render_clip(RenderRequest(source=src, start=2, end=14, out_path=out,
-                              captions_ass=ass, source_info=info, cfg=cfg), log=log)
+                              captions_ass=ass, source_info=info, cfg=cfg,
+                              framing="fit_blur"), log=log)
     result = probe(out)
     assert result.width == 1080 and result.height == 1920, "wrong output size"
-    print(f"render OK: {result.width}x{result.height}, {result.duration:.1f}s")
+    print(f"whole-frame render OK: {result.width}x{result.height}, {result.duration:.1f}s")
+
+    # 2b. Subject-follow crop still works -----------------------------------
+    out2 = work / "clip_track.mp4"
+    render_clip(RenderRequest(source=src, start=2, end=8, out_path=out2,
+                              source_info=info, cfg=cfg, framing="track"), log=log)
+    result2 = probe(out2)
+    assert result2.width == 1080 and result2.height == 1920, "wrong crop size"
+    print("subject-crop render OK:", result2.width, "x", result2.height)
+
+    from core.hardware import summary_line
+
+    print("hardware:", summary_line())
 
     # 3. Local viral-moment scoring -----------------------------------------
     fake = {

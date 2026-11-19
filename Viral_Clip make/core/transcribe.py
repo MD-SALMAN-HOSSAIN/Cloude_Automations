@@ -12,18 +12,56 @@ _MODEL_KEY = None
 
 def _load_model(cfg, log: Logger):
     global _MODEL, _MODEL_KEY
-    key = (cfg.get("whisper.model", "base"), cfg.get("whisper.device", "cpu"),
-           cfg.get("whisper.compute_type", "int8"))
+    from . import hardware
+    from .hardware import whisper_device
+
+    device, compute = whisper_device(cfg)
+    key = (cfg.get("whisper.model", "base"), device, compute)
     if _MODEL is not None and _MODEL_KEY == key:
         return _MODEL
     from faster_whisper import WhisperModel
 
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    log.info("Loading local speech model '%s' (first run downloads it once)", key[0])
-    _MODEL = WhisperModel(
-        key[0], device=key[1], compute_type=key[2],
-        download_root=str(cfg.models_dir),
-    )
+    log.info("Loading local speech model '%s' on %s (%s) - first run downloads it once",
+             key[0], device.upper(), compute)
+    try:
+        _MODEL = WhisperModel(
+            key[0], device=device, compute_type=compute,
+            download_root=str(cfg.models_dir),
+        )
+    except Exception as exc:
+        if device == "cuda":
+            log.warn("GPU speech model failed (%s) - falling back to CPU", exc)
+            hardware.disable_cuda(str(exc))
+            device, compute = "cpu", "int8"
+            key = (key[0], device, compute)
+            _MODEL = WhisperModel(
+                key[0], device=device, compute_type=compute,
+                download_root=str(cfg.models_dir),
+            )
+        else:
+            raise
+
+    if device == "cuda":
+        # Some NVIDIA drivers expose the GPU but lack cuBLAS/cuDNN runtime DLLs.
+        # The model can load yet fail on the first real inference - catch that here.
+        try:
+            import numpy as np
+
+            for _ in _MODEL.transcribe(np.zeros(16000, dtype=np.float32),
+                                       language="en", beam_size=1,
+                                       vad_filter=False, word_timestamps=False):
+                break
+            log.info("GPU speech check passed")
+        except Exception as exc:
+            log.warn("GPU speech runtime unavailable (%s) - switching speech to CPU", exc)
+            hardware.disable_cuda(str(exc))
+            device, compute = "cpu", "int8"
+            key = (key[0], device, compute)
+            _MODEL = WhisperModel(
+                key[0], device=device, compute_type=compute,
+                download_root=str(cfg.models_dir),
+            )
     _MODEL_KEY = key
     return _MODEL
 

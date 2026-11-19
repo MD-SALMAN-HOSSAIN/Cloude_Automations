@@ -54,6 +54,18 @@ ASPECT_SIZES = {"9:16": (1080, 1920), "1:1": (1080, 1080), "4:5": (1080, 1350),
 MODE_LABELS = {"Fast": "fast", "Balanced": "balanced", "Best": "best"}
 MODE_FROM_KEY = {v: k for k, v in MODE_LABELS.items()}
 
+FRAMING_LABELS = {
+    "Fit whole frame (blurred)": "fit_blur",
+    "Fit whole frame (black bars)": "fit_black",
+    "Follow subject (crops sides)": "track",
+}
+FRAMING_FROM_KEY = {v: k for k, v in FRAMING_LABELS.items()}
+
+DEVICE_LABELS = {"Auto (recommended)": "auto", "CPU only": "cpu", "GPU (NVIDIA)": "cuda"}
+DEVICE_FROM_KEY = {v: k for k, v in DEVICE_LABELS.items()}
+ENCODER_LABELS = {"Auto (GPU if available)": "auto", "CPU only": "cpu", "GPU only": "gpu"}
+ENCODER_FROM_KEY = {v: k for k, v in ENCODER_LABELS.items()}
+
 MODES = {
     "fast": {
         "whisper": "tiny", "crf": 26, "preset": "veryfast", "face": False,
@@ -197,6 +209,38 @@ class App:
         ctk.CTkEntry(grid, textvariable=self.lang_var, width=110, height=36,
                      corner_radius=9, font=FONT, placeholder_text="auto").grid(row=1, column=7, sticky="w", pady=(3, 10))
 
+        help_row = ctk.CTkFrame(settings, corner_radius=10, fg_color=CARD2)
+        help_row.pack(fill="x", padx=18, pady=(0, 8))
+        ctk.CTkLabel(
+            help_row,
+            text=("Speech model: tiny (fastest) → base (balanced) → small / medium (more accurate, slower). "
+                  "They run on your PC and download only once.\n"
+                  "Language: leave blank for automatic detection, or type a code like en, hi, es, fr, de, ar."),
+            font=FONT_SMALL, text_color=MUTED, wraplength=835, justify="left",
+        ).pack(side="left", padx=(14, 6), pady=8)
+        ctk.CTkButton(help_row, text="?", width=34, height=34, corner_radius=9,
+                      fg_color=PURPLE, hover_color="#9178ff", text_color=TEXT,
+                      font=FONT_SMALL, command=self.show_speech_help).pack(side="right", padx=10)
+
+        frame_row = ctk.CTkFrame(settings, fg_color="transparent")
+        frame_row.pack(fill="x", padx=18, pady=(0, 4))
+        ctk.CTkLabel(frame_row, text="Video framing", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w")
+        self.framing_var = ctk.StringVar(value=FRAMING_FROM_KEY.get(
+            str(self.cfg.get("video.framing", "fit_blur")), "Fit whole frame (blurred)"))
+        ctk.CTkSegmentedButton(
+            frame_row, values=list(FRAMING_LABELS), variable=self.framing_var,
+            height=36, corner_radius=10, font=FONT_SMALL,
+            selected_color=PINK, selected_hover_color=PINK_HOVER,
+            unselected_color=CARD2, unselected_hover_color="#2c3344",
+            text_color=TEXT, command=self._on_framing,
+        ).pack(fill="x", pady=(3, 3))
+        ctk.CTkLabel(
+            frame_row,
+            text="Gameplay / full-screen video: keep the whole picture. Person talking to camera: follow the subject.",
+            font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left",
+        ).pack(anchor="w")
+
         out_row = ctk.CTkFrame(settings, fg_color="transparent")
         out_row.pack(fill="x", padx=18, pady=(0, 6))
         self.out_var = ctk.StringVar(value=str(self.cfg.get("general.output_dir")))
@@ -217,9 +261,12 @@ class App:
         self.norm_var = ctk.BooleanVar(value=bool(self.cfg.get("features.normalize_audio", True)))
         for text, var in (("Face tracking", self.face_var), ("Captions", self.cap_var),
                           ("Hook overlay", self.hook_var), ("Normalize audio", self.norm_var)):
-            ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
-                          font=FONT_SMALL, progress_color=PINK,
-                          fg_color="#33394a").pack(side="left", padx=(0, 18))
+            switch = ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
+                                   font=FONT_SMALL, progress_color=PINK,
+                                   fg_color="#33394a")
+            switch.pack(side="left", padx=(0, 18))
+            if text == "Face tracking":
+                self.face_switch = switch
         settings.pack(fill="x", pady=(0, 10))
 
         self.go_btn = ctk.CTkButton(
@@ -318,6 +365,46 @@ class App:
             var.trace_add("write", lambda *_: self._on_ai_field_change())
         ai.pack(fill="x", pady=(0, 12))
 
+        hw = self._card(scroll, "HARDWARE — USE YOUR GPU OR CPU")
+        self.hw_info = ctk.CTkLabel(hw, text="Detecting hardware…", font=FONT_SMALL,
+                                     text_color=YELLOW, wraplength=880, justify="left")
+        self.hw_info.pack(anchor="w", padx=18, pady=(2, 6))
+
+        ctk.CTkLabel(hw, text="Speech-to-text device", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w", padx=18)
+        self.device_var = ctk.StringVar(value=DEVICE_FROM_KEY.get(
+            str(self.cfg.get("whisper.device", "auto")), "Auto (recommended)"))
+        ctk.CTkSegmentedButton(
+            hw, values=list(DEVICE_LABELS), variable=self.device_var, height=38,
+            corner_radius=10, font=FONT_SMALL,
+            selected_color=PURPLE, selected_hover_color="#9178ff",
+            unselected_color=CARD2, unselected_hover_color="#2c3344",
+            text_color=TEXT, command=self._on_device,
+        ).pack(fill="x", padx=18, pady=(3, 10))
+
+        ctk.CTkLabel(hw, text="Video encoder", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w", padx=18)
+        self.encoder_var = ctk.StringVar(value=ENCODER_FROM_KEY.get(
+            str(self.cfg.get("render.encoder", "auto")), "Auto (GPU if available)"))
+        ctk.CTkSegmentedButton(
+            hw, values=list(ENCODER_LABELS), variable=self.encoder_var, height=38,
+            corner_radius=10, font=FONT_SMALL,
+            selected_color=PURPLE, selected_hover_color="#9178ff",
+            unselected_color=CARD2, unselected_hover_color="#2c3344",
+            text_color=TEXT, command=self._on_encoder,
+        ).pack(fill="x", padx=18, pady=(3, 8))
+
+        ctk.CTkLabel(hw, text=(
+            "GPU means an NVIDIA graphics card (CUDA). It makes speech recognition and video "
+            "rendering much faster. Auto uses the GPU when present and the CPU otherwise — "
+            "there is always a free CPU fallback."
+        ), font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left").pack(
+            anchor="w", padx=18, pady=(0, 6))
+        ctk.CTkButton(hw, text="What is GPU / CPU?", width=170, height=32, corner_radius=9,
+                      fg_color=CARD2, hover_color="#2c3344", text_color=TEXT,
+                      font=FONT_SMALL, command=self.show_gpu_help).pack(anchor="w", padx=18, pady=(0, 14))
+        hw.pack(fill="x", pady=(0, 12))
+
         out = self._card(scroll, "OUTPUT SIZE")
         self.aspect_var = ctk.StringVar(value=str(self.cfg.get("video.aspect", "9:16")))
         if self.aspect_var.get() == "custom":
@@ -385,6 +472,75 @@ class App:
         self._on_provider()
         self._on_aspect()
         self._on_mode()
+        self._on_framing()
+        self._on_device()
+        self._on_encoder()
+        self.root.after(150, self._probe_hardware)
+
+    def show_speech_help(self):
+        messagebox.showinfo(
+            "Speech model & language — simple guide",
+            "SPEECH MODEL (runs 100% on your PC — nothing is uploaded)\n\n"
+            "• tiny — ~75 MB, fastest. Good for clear speech; misses some words with accents/noise.\n"
+            "• base — ~150 MB, default. Good balance of speed and accuracy for most videos.\n"
+            "• small — ~500 MB, noticeably better with accents, noise and multiple languages.\n"
+            "• medium — ~1.5 GB, most accurate but slow on a CPU.\n\n"
+            "The first time you pick a model it downloads once, then it works offline. "
+            "The model only reads the audio to find the exciting moments and word timings "
+            "for captions — it never sends your video anywhere.\n\n"
+            "LANGUAGE\n\n"
+            "Leave the box empty (auto) and Whisper detects the language itself — recommended.\n"
+            "If you know it, type a two-letter code to improve accuracy: "
+            "en (English), hi (Hindi), es (Spanish), fr (French), de (German), "
+            "pt (Portuguese), ar (Arabic), ur (Urdu), ja (Japanese), ko (Korean), zh (Chinese).\n"
+            "A wrong code makes results worse, so when unsure leave it blank.",
+        )
+
+    def show_gpu_help(self):
+        messagebox.showinfo(
+            "GPU vs CPU — simple guide",
+            "CPU = the processor every computer has. It always works, just slower.\n\n"
+            "GPU = the graphics card. An NVIDIA card (CUDA) can make speech-to-text and "
+            "video encoding several times faster.\n\n"
+            "• Auto (recommended): use the GPU if the app detects one, otherwise CPU.\n"
+            "• CPU only: force the processor (useful if a GPU causes problems).\n"
+            "• GPU only: prefer the graphics card; the app falls back to CPU automatically "
+            "if the GPU cannot do the job.\n\n"
+            "AMD / Intel graphics are not used for AI here; they work fine through the CPU path. "
+            "Nothing needs installing — NVIDIA drivers are all that is required.",
+        )
+
+    def _on_framing(self, _value=None):
+        framing = FRAMING_LABELS.get(self.framing_var.get(), "fit_blur")
+        self.cfg.set("video.framing", framing)
+        if getattr(self, "face_switch", None) is not None:
+            state = "normal" if framing == "track" else "disabled"
+            self.face_switch.configure(state=state)
+
+    def _on_device(self, _value=None):
+        choice = DEVICE_LABELS.get(self.device_var.get(), "auto")
+        self.cfg.set("whisper.device", choice)
+        self.cfg.set("whisper.compute_type",
+                     "float16" if choice == "cuda" else ("auto" if choice == "auto" else "int8"))
+
+    def _on_encoder(self, _value=None):
+        self.cfg.set("render.encoder", ENCODER_LABELS.get(self.encoder_var.get(), "auto"))
+
+    def _probe_hardware(self):
+        from core import hardware
+
+        info = hardware.describe()
+        gpu = info["name"] or "none detected"
+        encoders = ", ".join(info["encoders"]) or "none"
+        speech_note = ""
+        if info["cuda_detected"] and not info["cuda"]:
+            speech_note = " — GPU found, but CUDA runtime missing; CPU is used for speech"
+        self.hw_info.configure(
+            text=(f"Detected: {gpu}\n"
+                  f"Speech: {info['whisper_device'].upper()} ({info['compute']}){speech_note}\n"
+                  f"Video: {info['encoder']}  ·  Hardware encoders available: {encoders}"),
+            text_color=GREEN if info["cuda"] or info["encoders"] else MUTED,
+        )
 
     def _on_provider(self, _value=None):
         provider = PROVIDERS.get(self.provider_var.get(), "local")
@@ -522,6 +678,10 @@ class App:
             "video.aspect": "custom" if self.aspect_var.get() == "Custom" else self.aspect_var.get(),
             "video.custom_width": self._int(self.cw_var, 1080),
             "video.custom_height": self._int(self.ch_var, 1920),
+            "video.framing": FRAMING_LABELS.get(self.framing_var.get(), "fit_blur"),
+            "whisper.device": DEVICE_LABELS.get(self.device_var.get(), "auto"),
+            "whisper.compute_type": str(self.cfg.get("whisper.compute_type", "auto")),
+            "render.encoder": ENCODER_LABELS.get(self.encoder_var.get(), "auto"),
         })
         self.cfg.save()
 
@@ -552,6 +712,11 @@ class App:
         self.progress.set(0)
         self.logbox.delete("1.0", "end")
         self._log("HEAD", f"Starting: {source}")
+        from core import hardware
+        if self.cfg.get("whisper.device") == "cuda" and hardware.cuda_device_count() == 0:
+            self._log("WARN", "No NVIDIA GPU detected — speech will use the CPU automatically.")
+        if self.cfg.get("render.encoder") == "gpu" and not hardware.gpu_encoders():
+            self._log("WARN", "No hardware video encoder found — rendering will use the CPU.")
         threading.Thread(target=self._worker, args=(source,), daemon=True).start()
         self.root.after(80, self._poll)
 

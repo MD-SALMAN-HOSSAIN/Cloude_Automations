@@ -93,20 +93,27 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             "No suitable moments were found. Try a video with speech and more energy."
         )
 
-    # 5. Subject tracking ----------------------------------------------------
+    # 5. Framing / subject tracking -----------------------------------------
+    framing = str(cfg.get("video.framing", "fit_blur") or "fit_blur").lower()
+    if framing not in ("fit_blur", "fit_black", "track"):
+        framing = "fit_blur"
     track = None
-    if bool(cfg.get("features.face_track", True)):
-        _report(progress, 53, "Tracking the subject for 9:16 framing...")
-        cache = cfg.cache_dir / (video.stem + ".track.json")
-        track = faces.analyse_video(
-            video, cfg, log, cache_path=cache,
-            sample_interval=float(cfg.get("speed.face_interval", 0.5)),
-            max_seconds=analysis_seconds,
-        )
+    crop_w = crop_h = 0
+    if framing == "track":
+        if bool(cfg.get("features.face_track", True)):
+            _report(progress, 53, "Tracking the subject for 9:16 framing...")
+            cache = cfg.cache_dir / (video.stem + ".track.json")
+            track = faces.analyse_video(
+                video, cfg, log, cache_path=cache,
+                sample_interval=float(cfg.get("speed.face_interval", 0.5)),
+                max_seconds=analysis_seconds,
+            )
+        else:
+            log.info("Face tracking off - using centre crop")
+        crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
     else:
-        log.info("Subject tracking disabled - using centre crop")
-
-    crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
+        log.info("Framing: whole video visible in %s (no content cut, no face lock)",
+                 "a blurred vertical canvas" if framing == "fit_blur" else "black bars")
 
     # 6. Render each clip ----------------------------------------------------
     out_root = Path(str(cfg.get("general.output_dir")))
@@ -146,6 +153,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             source=video, start=moment.start, end=moment.end,
             out_path=out_path, captions_ass=ass_path,
             crop_x=crop_x, crop_y=crop_y, source_info=info, cfg=cfg,
+            framing=framing,
         )
         render_info = render_clip(req, log=log)
         make_thumbnail(out_path, day_dir / (name + ".jpg"),

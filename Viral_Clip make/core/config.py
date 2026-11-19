@@ -34,8 +34,10 @@ def default_settings() -> dict:
         "video.crf": 20,
         "video.preset": "medium",
         "whisper.model": "base",
-        "whisper.device": "cpu",
-        "whisper.compute_type": "int8",
+        "whisper.device": "auto",          # auto | cpu | cuda
+        "whisper.compute_type": "auto",    # auto -> int8 on CPU, float16 on GPU
+        "render.encoder": "auto",          # auto | cpu | gpu (falls back to CPU)
+        "video.framing": "fit_blur",       # fit_blur | fit_black | track
         "features.face_track": True,
         "features.captions": True,
         "features.hook": True,
@@ -110,6 +112,14 @@ class Config:
                 saved = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(saved, dict):
                     self.data.update(saved)
+                    # Older installs had no hardware choices. Their saved "cpu"
+                    # was an invisible default, not a real decision - let Auto
+                    # pick the newly-detected GPU instead of silently staying slow.
+                    if ("render.encoder" not in saved and "video.framing" not in saved
+                            and self.data.get("whisper.device") == "cpu"
+                            and self.data.get("whisper.compute_type") == "int8"):
+                        self.data["whisper.device"] = "auto"
+                        self.data["whisper.compute_type"] = "auto"
         except Exception:
             pass
 

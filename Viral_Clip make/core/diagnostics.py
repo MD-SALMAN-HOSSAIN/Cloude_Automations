@@ -30,6 +30,12 @@ def doctor() -> Path:
         except Exception as exc:
             lines.append(f"{label:<12}: ERROR - {exc}")
     lines.append(f"app data    : {app_data_dir()}")
+    try:
+        from .hardware import summary_line
+
+        lines.append(f"hardware    : {summary_line()}")
+    except Exception as exc:
+        lines.append(f"hardware    : ERROR - {exc}")
     out = _report_file("doctor.txt")
     out.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
