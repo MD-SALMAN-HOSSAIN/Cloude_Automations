@@ -54,7 +54,7 @@ def default_settings() -> dict:
         "ai.provider": "local",          # local | gemini | openai
         "ai.api_key": "",
         "ai.base_url": "http://localhost:11434/v1",
-        "ai.model": "gemini-2.5-flash",
+        "ai.model": "gemini-3.5-flash-lite",
         # Output / quality
         "quality.mode": "balanced",      # fast | balanced | best
         "video.aspect": "9:16",          # 9:16 | 1:1 | 4:5 | 3:4 | 16:9 | custom

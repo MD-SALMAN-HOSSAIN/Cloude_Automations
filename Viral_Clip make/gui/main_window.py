@@ -3,342 +3,410 @@ from __future__ import annotations
 import os
 import queue
 import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
+import customtkinter as ctk
+
+from core.ai import GEMINI_DEFAULT_MODEL
 from core.config import Config
 from core.pipeline import run_pipeline
 from core.util import Logger
 
-BG = "#0f1117"
-PANEL = "#1a1e29"
-TEXT = "#e8eaf0"
-MUTED = "#9aa3b8"
-ACCENT = "#ff3d6e"
-ACCENT2 = "#7c5cff"
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
+BG = "#0d0f15"
+CARD = "#171b26"
+CARD2 = "#1e2331"
+BORDER = "#2b3242"
+TEXT = "#eef0f6"
+MUTED = "#98a1b6"
+PINK = "#ff3d6e"
+PINK_HOVER = "#ff6289"
+PURPLE = "#7c5cff"
 GREEN = "#3ddc97"
 YELLOW = "#ffd166"
 RED = "#ff6b6b"
 
+# Fonts are created once a Tk root exists (see _init_fonts in App.__init__).
+FONT = FONT_SMALL = FONT_TITLE = FONT_MONO = None
+
+
+def _init_fonts():
+    global FONT, FONT_SMALL, FONT_TITLE, FONT_MONO
+    FONT = ctk.CTkFont(family="Segoe UI", size=13)
+    FONT_SMALL = ctk.CTkFont(family="Segoe UI", size=11)
+    FONT_TITLE = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+    FONT_MONO = ctk.CTkFont(family="Consolas", size=12)
+
 PROVIDERS = {
     "Local (free - no key)": "local",
     "Gemini API": "gemini",
-    "OpenAI-compatible (Ollama / LM Studio / OpenRouter)": "openai",
+    "OpenAI / Ollama / OpenRouter": "openai",
 }
 PROVIDER_KEYS = {v: k for k, v in PROVIDERS.items()}
 
-ASPECTS = {
-    "9:16 (Shorts / TikTok / Reels)": "9:16",
-    "1:1 (Square)": "1:1",
-    "4:5 (Portrait)": "4:5",
-    "3:4 (Portrait)": "3:4",
-    "16:9 (Landscape)": "16:9",
-    "Custom size": "custom",
-}
-ASPECT_KEYS = {v: k for k, v in ASPECTS.items()}
+ASPECTS = ["9:16", "1:1", "4:5", "3:4", "16:9", "Custom"]
 ASPECT_SIZES = {"9:16": (1080, 1920), "1:1": (1080, 1080), "4:5": (1080, 1350),
                 "3:4": (1080, 1440), "16:9": (1920, 1080)}
 
+MODE_LABELS = {"Fast": "fast", "Balanced": "balanced", "Best": "best"}
+MODE_FROM_KEY = {v: k for k, v in MODE_LABELS.items()}
+
 MODES = {
-    "Fast (turbo)": {
+    "fast": {
         "whisper": "tiny", "crf": 26, "preset": "veryfast", "face": False,
         "normalize": False, "face_interval": 1.0, "candidates": 300,
-        "desc": "Fastest. Smaller model, simpler crop, quicker render - lower quality.",
+        "desc": "Fastest — small model, simpler crop, quicker render. Great for previews.",
     },
-    "Balanced": {
+    "balanced": {
         "whisper": "base", "crf": 20, "preset": "medium", "face": True,
         "normalize": True, "face_interval": 0.5, "candidates": 600,
-        "desc": "Recommended. Good speed with tracked framing and clean audio.",
+        "desc": "Recommended — tracked framing, word captions and clean audio.",
     },
-    "Best quality": {
+    "best": {
         "whisper": "small", "crf": 16, "preset": "slow", "face": True,
         "normalize": True, "face_interval": 0.35, "candidates": 900,
-        "desc": "Slowest. More accurate words and the cleanest final picture.",
+        "desc": "Highest quality — more accurate words, cleaner picture, slower render.",
     },
 }
 
 
 class App:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: ctk.CTk):
         self.root = root
         self.cfg = Config()
         self.q: queue.Queue = queue.Queue()
         self.running = False
+        self.checking = False
         self.result = None
-        self._build_style()
-        self._build_ui()
+        _init_fonts()
+        self._build()
+        self._fade_in()
+
+    # ------------------------------------------------------------------
+    def _fade_in(self, alpha: float = 0.0):
+        self.root.attributes("-alpha", min(1.0, alpha))
+        if alpha < 1.0:
+            self.root.after(20, lambda: self._fade_in(alpha + 0.09))
+
+    def _build(self):
+        self.root.title("Viral Clip Make — Modern Free Shorts Maker")
+        self.root.geometry("1080x950")
+        self.root.minsize(980, 800)
+        self.root.configure(fg_color=BG)
+        self.root.resizable(True, True)
+
+        self._header()
+        self.tabs = ctk.CTkTabview(
+            self.root, corner_radius=18, fg_color=BG,
+            segmented_button_fg_color=CARD,
+            segmented_button_selected_color=(PINK, PINK),
+            segmented_button_selected_hover_color=PINK_HOVER,
+            segmented_button_unselected_color=CARD2,
+            segmented_button_unselected_hover_color="#2a3040",
+            text_color=MUTED,
+        )
+        self.tabs.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        self.tab_make = self.tabs.add("  Make Clips  ")
+        self.tab_adv = self.tabs.add("  AI & Output  ")
+
+        self._make_tab()
+        self._advanced_tab()
         self._load_advanced()
 
-    # ------------------------------------------------------------------
-    def _build_style(self):
-        self.root.title("Viral Clip Make  —  100% Free Viral Shorts Maker")
-        self.root.geometry("990x880")
-        self.root.minsize(900, 730)
-        self.root.configure(bg=BG)
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-        style.configure("TFrame", background=BG)
-        style.configure("Panel.TFrame", background=PANEL)
-        style.configure("TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
-        style.configure("OnBg.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Head.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 18, "bold"))
-        style.configure("PanelTitle.TLabel", background=PANEL, foreground=ACCENT2,
-                        font=("Segoe UI", 10, "bold"))
-        style.configure("Hint.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("TEntry", fieldbackground="#11131a", foreground=TEXT,
-                        insertcolor=TEXT, bordercolor="#33394a")
-        style.configure("TCombobox", fieldbackground="#11131a", foreground=TEXT,
-                        background="#11131a", arrowcolor=TEXT)
-        style.configure("TCheckbutton", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
-        style.map("TCheckbutton", background=[("active", PANEL)])
-        style.configure("TSpinbox", fieldbackground="#11131a", foreground=TEXT, arrowcolor=TEXT)
-        style.configure("TProgressbar", background=ACCENT, troughcolor="#11131a",
-                        bordercolor="#11131a", lightcolor=ACCENT, darkcolor=ACCENT)
-        style.configure("Go.TButton", background=ACCENT, foreground="#ffffff",
-                        font=("Segoe UI", 12, "bold"), borderwidth=0, padding=10)
-        style.map("Go.TButton", background=[("active", "#ff547d"), ("disabled", "#5a2b3a")])
-        style.configure("Small.TButton", font=("Segoe UI", 9), padding=5)
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background="#191d27", foreground=MUTED,
-                        padding=(14, 7), font=("Segoe UI", 10, "bold"))
-        style.map("TNotebook.Tab", background=[("selected", PANEL)],
-                  foreground=[("selected", TEXT)])
+    def _header(self):
+        canvas = ctk.CTkCanvas(self.root, height=94, bg=BG, highlightthickness=0, bd=0)
+        canvas.pack(fill="x")
+        # subtle gradient glow behind the title
+        for i in range(90):
+            ratio = i / 89
+            r = int(0x17 + (0x24 - 0x17) * ratio)
+            g = int(0x14 + (0x18 - 0x14) * ratio)
+            b = int(0x26 + (0x33 - 0x26) * ratio)
+            canvas.create_rectangle(i * 12, 0, i * 12 + 13, 78,
+                                    fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+        canvas.create_text(10, 30, anchor="w", text="VIRAL CLIP MAKE",
+                           fill=TEXT, font=("Segoe UI", 28, "bold"))
+        canvas.create_text(12, 62, anchor="w",
+                           text="Long video in. Viral vertical clips out. Free local engine, optional AI, any aspect ratio.",
+                           fill=MUTED, font=("Segoe UI", 12))
+        # gradient accent line
+        for i in range(180):
+            ratio = i / 179
+            r = int(0x7c + (0xff - 0x7c) * ratio)
+            g = int(0x5c + (0x3d - 0x5c) * ratio)
+            b = int(0xff + (0x6e - 0xff) * ratio)
+            canvas.create_rectangle(i * 6, 86, i * 6 + 7, 91,
+                                    fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+
+    def _card(self, parent, title: str):
+        card = ctk.CTkFrame(parent, corner_radius=16, fg_color=CARD,
+                            border_width=1, border_color=BORDER)
+        ctk.CTkLabel(card, text=title, font=FONT_TITLE, text_color=PINK).pack(
+            anchor="w", padx=18, pady=(14, 4))
+        return card
 
     # ------------------------------------------------------------------
-    def _build_ui(self):
-        main = ttk.Frame(self.root, padding=(18, 12))
-        main.pack(fill="both", expand=True)
+    def _make_tab(self):
+        tab = self.tab_make
 
-        header = tk.Canvas(main, height=78, bg=BG, highlightthickness=0)
-        header.pack(fill="x")
-        header.create_text(4, 26, anchor="w", text="VIRAL CLIP MAKE",
-                           fill=TEXT, font=("Segoe UI", 25, "bold"))
-        header.create_text(6, 56, anchor="w",
-                           text="Turn any long video into viral shorts  ·  free local mode  ·  optional AI  ·  any aspect ratio",
-                           fill=MUTED, font=("Segoe UI", 10))
-        header.create_rectangle(0, 74, 990, 78, fill=ACCENT, outline="")
+        src = self._card(tab, "VIDEO SOURCE")
+        row = ctk.CTkFrame(src, fg_color="transparent")
+        row.pack(fill="x", padx=18, pady=(4, 6))
+        self.source_var = ctk.StringVar()
+        ctk.CTkEntry(row, textvariable=self.source_var, height=40, corner_radius=10,
+                     placeholder_text="Paste a YouTube link or browse for a video file...",
+                     font=FONT).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(row, text="Browse", width=84, height=40, corner_radius=10,
+                      fg_color=CARD2, hover_color="#2c3344", text_color=TEXT,
+                      command=self.browse_file).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(row, text="Paste", width=76, height=40, corner_radius=10,
+                      fg_color=CARD2, hover_color="#2c3344", text_color=TEXT,
+                      command=self.paste_link).pack(side="left")
+        src.pack(fill="x", pady=(12, 10))
 
-        self.notebook = ttk.Notebook(main)
-        self.notebook.pack(fill="both", expand=True, pady=(10, 0))
-        tab_make = ttk.Frame(self.notebook)
-        tab_adv = ttk.Frame(self.notebook)
-        self.notebook.add(tab_make, text="  Make Clips  ")
-        self.notebook.add(tab_adv, text="  AI & Output  ")
+        settings = self._card(tab, "QUICK SETTINGS")
+        grid = ctk.CTkFrame(settings, fg_color="transparent")
+        grid.pack(fill="x", padx=18, pady=(4, 8))
 
-        self._build_make_tab(tab_make)
-        self._build_advanced_tab(tab_adv)
+        self.clips_var = ctk.StringVar(value=str(self.cfg.get("general.clips_per_video", 5)))
+        self.min_var = ctk.StringVar(value=str(self.cfg.get("general.min_seconds", 12)))
+        self.max_var = ctk.StringVar(value=str(self.cfg.get("general.max_seconds", 45)))
+        self.lang_var = ctk.StringVar(value=str(self.cfg.get("general.language", "")))
+        self.whisper_var = ctk.StringVar(value=str(self.cfg.get("whisper.model", "base")))
 
-    # ------------------------------------------------------------------
-    def _build_make_tab(self, tab):
-        src = ttk.Frame(tab, style="Panel.TFrame", padding=13)
-        src.pack(fill="x", pady=(8, 6))
-        ttk.Label(src, text="VIDEO SOURCE", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
-        self.source_var = tk.StringVar()
-        ttk.Entry(src, textvariable=self.source_var, font=("Segoe UI", 11)).grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=(7, 3))
-        ttk.Label(src, text="Paste a YouTube / online link, or choose a video file on your PC.",
-                  style="Hint.TLabel").grid(row=2, column=0, columnspan=3, sticky="w")
-        ttk.Button(src, text="Browse file", style="Small.TButton",
-                   command=self.browse_file).grid(row=1, column=3, padx=(8, 4))
-        ttk.Button(src, text="Paste link", style="Small.TButton",
-                   command=self.paste_link).grid(row=1, column=4)
-        src.columnconfigure(0, weight=1)
+        fields = [
+            ("Clips", self.clips_var, 80), ("Min sec", self.min_var, 80),
+            ("Max sec", self.max_var, 80),
+        ]
+        for i, (label, var, width) in enumerate(fields):
+            ctk.CTkLabel(grid, text=label, font=FONT_SMALL, text_color=MUTED).grid(row=0, column=i * 2, sticky="w", padx=(0, 6))
+            ctk.CTkEntry(grid, textvariable=var, width=width, height=36,
+                         corner_radius=9, font=FONT).grid(row=1, column=i * 2, sticky="w", padx=(0, 12), pady=(3, 10))
 
-        settings = ttk.Frame(tab, style="Panel.TFrame", padding=13)
-        settings.pack(fill="x", pady=6)
-        ttk.Label(settings, text="QUICK SETTINGS", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(grid, text="Speech model", font=FONT_SMALL, text_color=MUTED).grid(row=0, column=6, sticky="w")
+        ctk.CTkComboBox(grid, variable=self.whisper_var, values=["tiny", "base", "small", "medium"],
+                        width=110, height=36, corner_radius=9, state="readonly",
+                        font=FONT, dropdown_font=FONT).grid(row=1, column=6, sticky="w", padx=(0, 12), pady=(3, 10))
+        ctk.CTkLabel(grid, text="Language", font=FONT_SMALL, text_color=MUTED).grid(row=0, column=7, sticky="w")
+        ctk.CTkEntry(grid, textvariable=self.lang_var, width=110, height=36,
+                     corner_radius=9, font=FONT, placeholder_text="auto").grid(row=1, column=7, sticky="w", pady=(3, 10))
 
-        def lab(row, col, text):
-            ttk.Label(settings, text=text).grid(row=row, column=col, sticky="w", pady=(9, 2))
+        out_row = ctk.CTkFrame(settings, fg_color="transparent")
+        out_row.pack(fill="x", padx=18, pady=(0, 6))
+        self.out_var = ctk.StringVar(value=str(self.cfg.get("general.output_dir")))
+        ctk.CTkLabel(out_row, text="Output folder", font=FONT_SMALL, text_color=MUTED).pack(anchor="w")
+        r2 = ctk.CTkFrame(out_row, fg_color="transparent")
+        r2.pack(fill="x", pady=(3, 0))
+        ctk.CTkEntry(r2, textvariable=self.out_var, height=38, corner_radius=10,
+                     font=FONT).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(r2, text="Change", width=84, height=38, corner_radius=10,
+                      fg_color=CARD2, hover_color="#2c3344", text_color=TEXT,
+                      command=self.browse_output).pack(side="left")
 
-        self.clips_var = tk.IntVar(value=int(self.cfg.get("general.clips_per_video", 5)))
-        lab(1, 0, "Clips per video")
-        ttk.Spinbox(settings, from_=1, to=15, width=6, textvariable=self.clips_var).grid(row=2, column=0, sticky="w")
+        switches = ctk.CTkFrame(settings, fg_color="transparent")
+        switches.pack(fill="x", padx=18, pady=(8, 14))
+        self.face_var = ctk.BooleanVar(value=bool(self.cfg.get("features.face_track", True)))
+        self.cap_var = ctk.BooleanVar(value=bool(self.cfg.get("features.captions", True)))
+        self.hook_var = ctk.BooleanVar(value=bool(self.cfg.get("features.hook", True)))
+        self.norm_var = ctk.BooleanVar(value=bool(self.cfg.get("features.normalize_audio", True)))
+        for text, var in (("Face tracking", self.face_var), ("Captions", self.cap_var),
+                          ("Hook overlay", self.hook_var), ("Normalize audio", self.norm_var)):
+            ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
+                          font=FONT_SMALL, progress_color=PINK,
+                          fg_color="#33394a").pack(side="left", padx=(0, 18))
+        settings.pack(fill="x", pady=(0, 10))
 
-        self.min_var = tk.IntVar(value=int(self.cfg.get("general.min_seconds", 12)))
-        lab(1, 1, "Min seconds")
-        ttk.Spinbox(settings, from_=8, to=30, width=6, textvariable=self.min_var).grid(row=2, column=1, sticky="w")
+        self.go_btn = ctk.CTkButton(
+            tab, text="MAKE VIRAL CLIPS", height=54, corner_radius=14,
+            font=ctk.CTkFont(family="Segoe UI", size=17, weight="bold"),
+            fg_color=PINK, hover_color=PINK_HOVER, command=self.start,
+        )
+        self.go_btn.pack(fill="x", pady=(2, 12))
 
-        self.max_var = tk.IntVar(value=int(self.cfg.get("general.max_seconds", 45)))
-        lab(1, 2, "Max seconds")
-        ttk.Spinbox(settings, from_=15, to=60, width=6, textvariable=self.max_var).grid(row=2, column=2, sticky="w")
+        prog = ctk.CTkFrame(tab, fg_color="transparent")
+        prog.pack(fill="x", pady=(0, 8))
+        self.progress = ctk.CTkProgressBar(prog, height=10, corner_radius=6,
+                                           fg_color="#202634", progress_color=PINK)
+        self.progress.set(0)
+        self.progress.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        self.status = ctk.CTkLabel(prog, text="Ready", width=220, anchor="e",
+                                   font=FONT_SMALL, text_color=MUTED)
+        self.status.pack(side="right")
 
-        self.whisper_var = tk.StringVar(value=str(self.cfg.get("whisper.model", "base")))
-        lab(1, 3, "Speech model")
-        ttk.Combobox(settings, textvariable=self.whisper_var, width=10, state="readonly",
-                     values=["tiny", "base", "small", "medium"]).grid(row=2, column=3, sticky="w")
-
-        self.lang_var = tk.StringVar(value=str(self.cfg.get("general.language", "")))
-        lab(1, 4, "Language")
-        ttk.Entry(settings, textvariable=self.lang_var, width=10).grid(row=2, column=4, sticky="w")
-
-        self.out_var = tk.StringVar(value=str(self.cfg.get("general.output_dir")))
-        lab(3, 0, "Output folder")
-        ttk.Entry(settings, textvariable=self.out_var).grid(row=4, column=0, columnspan=4, sticky="ew")
-        ttk.Button(settings, text="Change", style="Small.TButton",
-                   command=self.browse_output).grid(row=4, column=4, padx=(8, 0))
-
-        flags = ttk.Frame(settings, style="Panel.TFrame")
-        flags.grid(row=5, column=0, columnspan=5, sticky="w", pady=(11, 0))
-        self.face_var = tk.BooleanVar(value=bool(self.cfg.get("features.face_track", True)))
-        self.cap_var = tk.BooleanVar(value=bool(self.cfg.get("features.captions", True)))
-        self.hook_var = tk.BooleanVar(value=bool(self.cfg.get("features.hook", True)))
-        self.norm_var = tk.BooleanVar(value=bool(self.cfg.get("features.normalize_audio", True)))
-        ttk.Checkbutton(flags, text="Face tracking", variable=self.face_var).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(flags, text="Captions", variable=self.cap_var).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(flags, text="Hook overlay", variable=self.hook_var).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(flags, text="Normalize audio", variable=self.norm_var).pack(side="left")
-        settings.columnconfigure(0, weight=1)
-
-        action = ttk.Frame(tab, padding=(0, 4))
-        action.pack(fill="x")
-        self.go_btn = ttk.Button(action, text="MAKE VIRAL CLIPS", style="Go.TButton", command=self.start)
-        self.go_btn.pack(fill="x", ipady=5)
-
-        prog_frame = ttk.Frame(tab)
-        prog_frame.pack(fill="x", pady=(7, 2))
-        self.progress = ttk.Progressbar(prog_frame, mode="determinate", maximum=100)
-        self.progress.pack(fill="x", side="left", expand=True)
-        self.status = ttk.Label(prog_frame, text="Ready", width=26, anchor="e",
-                                background=BG, foreground=MUTED, font=("Segoe UI", 9))
-        self.status.pack(side="right", padx=(8, 0))
-
-        log_frame = ttk.Frame(tab, style="Panel.TFrame", padding=8)
-        log_frame.pack(fill="both", expand=True, pady=(6, 0))
-        ttk.Label(log_frame, text="ACTIVITY", style="PanelTitle.TLabel").pack(anchor="w")
-        self.logbox = tk.Text(log_frame, height=9, bg="#0b0d13", fg=TEXT,
-                              font=("Consolas", 9), wrap="word", relief="flat",
-                              insertbackground=TEXT, padx=8, pady=6)
-        self.logbox.pack(fill="both", expand=True, pady=(6, 0))
+        logcard = ctk.CTkFrame(tab, corner_radius=16, fg_color="#0b0e14",
+                               border_width=1, border_color=BORDER)
+        logcard.pack(fill="both", expand=True)
+        ctk.CTkLabel(logcard, text="ACTIVITY", font=FONT_TITLE,
+                     text_color=PURPLE).pack(anchor="w", padx=18, pady=(12, 2))
+        self.logbox = ctk.CTkTextbox(logcard, corner_radius=12, font=FONT_MONO,
+                                     fg_color="#080a0f", text_color=TEXT)
+        self.logbox.pack(fill="both", expand=True, padx=14, pady=(4, 14))
         for tag, color in (("INFO", MUTED), ("OK", GREEN), ("WARN", YELLOW),
-                           ("ERROR", RED), ("HEAD", ACCENT2)):
+                           ("ERROR", RED), ("HEAD", PURPLE)):
             self.logbox.tag_config(tag, foreground=color)
 
-        bottom = ttk.Frame(tab)
-        bottom.pack(fill="x", pady=(7, 0))
-        self.open_btn = ttk.Button(bottom, text="Open output folder", state="disabled",
-                                   command=self.open_output)
+        bottom = ctk.CTkFrame(tab, fg_color="transparent")
+        bottom.pack(fill="x", pady=(10, 0))
+        self.open_btn = ctk.CTkButton(bottom, text="Open output folder", height=38,
+                                      corner_radius=10, fg_color=CARD2,
+                                      hover_color="#2c3344", text_color=TEXT,
+                                      state="disabled", command=self.open_output)
         self.open_btn.pack(side="left")
-        ttk.Label(bottom, text="Free local mode by default  ·  no account  ·  no watermark",
-                  background=BG, foreground=MUTED, font=("Segoe UI", 9)).pack(side="right")
+        ctk.CTkLabel(bottom, text="Free local mode by default · no account · no watermark",
+                     font=FONT_SMALL, text_color=MUTED).pack(side="right")
+        self._log("HEAD", "Welcome! Paste a link or pick a video, then press MAKE VIRAL CLIPS.")
 
     # ------------------------------------------------------------------
-    def _build_advanced_tab(self, tab):
-        ai = ttk.Frame(tab, style="Panel.TFrame", padding=13)
-        ai.pack(fill="x", pady=(8, 6))
-        ttk.Label(ai, text="OPTIONAL AI / API  (skip this for 100% free local mode)",
-                  style="PanelTitle.TLabel").pack(anchor="w")
+    def _advanced_tab(self):
+        scroll = ctk.CTkScrollableFrame(self.tab_adv, corner_radius=16,
+                                        fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=4, pady=4)
 
-        self.provider_var = tk.StringVar(value=PROVIDER_KEYS.get(
+        ai = self._card(scroll, "OPTIONAL AI / API  —  skip this for the free local engine")
+        self.provider_var = ctk.StringVar(value=PROVIDER_KEYS.get(
             str(self.cfg.get("ai.provider", "local")), "Local (free - no key)"))
-        row = ttk.Frame(ai, style="Panel.TFrame"); row.pack(fill="x", pady=(8, 0))
-        ttk.Label(row, text="Provider", width=12).pack(side="left")
-        ttk.Combobox(row, textvariable=self.provider_var, state="readonly", width=48,
-                     values=list(PROVIDERS)).pack(side="left")
-        self.provider_var.trace_add("write", self._on_provider)
+        ctk.CTkLabel(ai, text="Provider", font=FONT_SMALL, text_color=MUTED).pack(anchor="w", padx=18, pady=(4, 2))
+        ctk.CTkComboBox(ai, variable=self.provider_var, values=list(PROVIDERS),
+                        width=430, height=40, corner_radius=10, state="readonly",
+                        font=FONT, dropdown_font=FONT,
+                        command=self._on_provider).pack(anchor="w", padx=18, pady=(0, 12))
 
-        self.key_var = tk.StringVar(value=str(self.cfg.get("ai.api_key", "") or ""))
-        row = ttk.Frame(ai, style="Panel.TFrame"); row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="API key", width=12).pack(side="left")
-        self.key_entry = ttk.Entry(row, textvariable=self.key_var, show="•", width=52)
-        self.key_entry.pack(side="left")
-        self.show_key = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row, text="Show", variable=self.show_key,
-                        command=self._toggle_key).pack(side="left", padx=(6, 0))
+        self.key_var = ctk.StringVar(value=str(self.cfg.get("ai.api_key", "") or ""))
+        self.base_var = ctk.StringVar(value=str(self.cfg.get("ai.base_url", "")))
+        self.ai_model_var = ctk.StringVar(value=str(self.cfg.get("ai.model", "")))
 
-        self.base_var = tk.StringVar(value=str(self.cfg.get("ai.base_url", "")))
-        row = ttk.Frame(ai, style="Panel.TFrame"); row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="Base URL", width=12).pack(side="left")
-        ttk.Entry(row, textvariable=self.base_var, width=52).pack(side="left")
+        pairs = [
+            ("API key", self.key_var, "Paste your key (stored only on this PC)"),
+            ("Base URL", self.base_var, "http://localhost:11434/v1"),
+            ("Model", self.ai_model_var, "gemini-2.5-flash / llama3.1"),
+        ]
+        for label, var, placeholder in pairs:
+            ctk.CTkLabel(ai, text=label, font=FONT_SMALL, text_color=MUTED).pack(anchor="w", padx=18, pady=(0, 2))
+            show = "•" if label == "API key" else ""
+            ctk.CTkEntry(ai, textvariable=var, height=40, corner_radius=10,
+                         placeholder_text=placeholder, font=FONT,
+                         show=show).pack(fill="x", padx=18, pady=(0, 10))
 
-        self.ai_model_var = tk.StringVar(value=str(self.cfg.get("ai.model", "")))
-        row = ttk.Frame(ai, style="Panel.TFrame"); row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="Model", width=12).pack(side="left")
-        ttk.Entry(row, textvariable=self.ai_model_var, width=52).pack(side="left")
+        ctk.CTkLabel(ai, text=(
+            "Gemini: use a free key from aistudio.google.com  ·  Ollama / LM Studio: use the local URL above  ·  "
+            "OpenRouter: https://openrouter.ai/api/v1. If an API fails, the app falls back to free local scoring."
+        ), font=FONT_SMALL, text_color=MUTED, wraplength=880,
+            justify="left").pack(anchor="w", padx=18, pady=(2, 10))
 
-        ttk.Label(ai, text=(
-            "Examples: Gemini -> gemini-2.5-flash  |  Ollama -> llama3.1, URL http://localhost:11434/v1  "
-            "|  OpenRouter -> openai/gpt-4o-mini, URL https://openrouter.ai/api/v1\n"
-            "Keys are stored only in this PC's settings file. If the API fails, the app automatically "
-            "falls back to the free local moment picker."
-        ), style="Hint.TLabel", justify="left", wraplength=880).pack(anchor="w", pady=(8, 0))
+        conn = ctk.CTkFrame(ai, corner_radius=12, fg_color=CARD2)
+        conn.pack(fill="x", padx=18, pady=(0, 16))
+        self.conn_dot = ctk.CTkLabel(conn, text="●", font=ctk.CTkFont(size=16),
+                                     text_color=MUTED)
+        self.conn_dot.pack(side="left", padx=(16, 6))
+        self.conn_label = ctk.CTkLabel(conn, text="Not checked — press Check connection",
+                                       font=FONT_SMALL, text_color=MUTED)
+        self.conn_label.pack(side="left", fill="x", expand=True)
+        self.conn_btn = ctk.CTkButton(
+            conn, text="Check connection", width=158, height=36, corner_radius=10,
+            fg_color="#2f6f5e", hover_color="#3d8a75", text_color=TEXT,
+            font=FONT_SMALL, command=self.check_connection_clicked,
+        )
+        self.conn_btn.pack(side="right", padx=10, pady=8)
 
-        out = ttk.Frame(tab, style="Panel.TFrame", padding=13)
-        out.pack(fill="x", pady=6)
-        ttk.Label(out, text="OUTPUT SIZE", style="PanelTitle.TLabel").pack(anchor="w")
-        row = ttk.Frame(out, style="Panel.TFrame"); row.pack(fill="x", pady=(8, 0))
-        ttk.Label(row, text="Aspect ratio", width=12).pack(side="left")
-        self.aspect_var = tk.StringVar(value=ASPECT_KEYS.get(
-            str(self.cfg.get("video.aspect", "9:16")), "9:16 (Shorts / TikTok / Reels)"))
-        ttk.Combobox(row, textvariable=self.aspect_var, state="readonly", width=30,
-                     values=list(ASPECTS)).pack(side="left")
-        self.aspect_var.trace_add("write", self._on_aspect)
+        for var in (self.key_var, self.base_var, self.ai_model_var):
+            var.trace_add("write", lambda *_: self._on_ai_field_change())
+        ai.pack(fill="x", pady=(0, 12))
 
-        self.cw_var = tk.IntVar(value=int(self.cfg.get("video.custom_width", 1080)))
-        self.ch_var = tk.IntVar(value=int(self.cfg.get("video.custom_height", 1920)))
-        row = ttk.Frame(out, style="Panel.TFrame"); row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="Custom size", width=12).pack(side="left")
-        self.cw_spin = ttk.Spinbox(row, from_=320, to=3840, width=8, textvariable=self.cw_var)
-        self.cw_spin.pack(side="left")
-        ttk.Label(row, text="x").pack(side="left", padx=5)
-        self.ch_spin = ttk.Spinbox(row, from_=320, to=3840, width=8, textvariable=self.ch_var)
-        self.ch_spin.pack(side="left")
+        out = self._card(scroll, "OUTPUT SIZE")
+        self.aspect_var = ctk.StringVar(value=str(self.cfg.get("video.aspect", "9:16")))
+        if self.aspect_var.get() == "custom":
+            self.aspect_var.set("Custom")
+        ctk.CTkLabel(out, text="Aspect ratio", font=FONT_SMALL, text_color=MUTED).pack(anchor="w", padx=18, pady=(4, 4))
+        self.aspect_seg = ctk.CTkSegmentedButton(
+            out, values=ASPECTS, variable=self.aspect_var, height=40,
+            corner_radius=10, font=FONT_SMALL,
+            selected_color=PINK, selected_hover_color=PINK_HOVER,
+            unselected_color=CARD2, unselected_hover_color="#2c3344",
+            text_color=TEXT, command=self._on_aspect,
+        )
+        self.aspect_seg.pack(fill="x", padx=18, pady=(0, 12))
 
-        qual = ttk.Frame(tab, style="Panel.TFrame", padding=13)
-        qual.pack(fill="x", pady=6)
-        ttk.Label(qual, text="SPEED / QUALITY", style="PanelTitle.TLabel").pack(anchor="w")
-        row = ttk.Frame(qual, style="Panel.TFrame"); row.pack(fill="x", pady=(8, 0))
-        ttk.Label(row, text="Mode", width=12).pack(side="left")
-        self.mode_var = tk.StringVar(value=str(self.cfg.get("quality.mode", "Balanced")))
-        if self.mode_var.get() not in MODES:
-            self.mode_var.set("Balanced")
-        ttk.Combobox(row, textvariable=self.mode_var, state="readonly", width=28,
-                     values=list(MODES)).pack(side="left")
-        self.mode_var.trace_add("write", self._apply_mode)
+        dims = ctk.CTkFrame(out, fg_color="transparent")
+        dims.pack(fill="x", padx=18, pady=(0, 14))
+        self.cw_var = ctk.StringVar(value=str(self.cfg.get("video.custom_width", 1080)))
+        self.ch_var = ctk.StringVar(value=str(self.cfg.get("video.custom_height", 1920)))
+        ctk.CTkLabel(dims, text="Custom width", font=FONT_SMALL, text_color=MUTED).pack(side="left")
+        self.cw_entry = ctk.CTkEntry(dims, textvariable=self.cw_var, width=90, height=36,
+                                     corner_radius=9, font=FONT)
+        self.cw_entry.pack(side="left", padx=(8, 16))
+        ctk.CTkLabel(dims, text="Custom height", font=FONT_SMALL, text_color=MUTED).pack(side="left")
+        self.ch_entry = ctk.CTkEntry(dims, textvariable=self.ch_var, width=90, height=36,
+                                     corner_radius=9, font=FONT)
+        self.ch_entry.pack(side="left", padx=(8, 0))
+        out.pack(fill="x", pady=(0, 12))
 
-        self.mode_desc = ttk.Label(qual, text="", style="Hint.TLabel", wraplength=860, justify="left")
-        self.mode_desc.pack(anchor="w", pady=(8, 0))
+        qual = self._card(scroll, "SPEED / QUALITY")
+        key = str(self.cfg.get("quality.mode", "balanced"))
+        self.mode_var = ctk.StringVar(value=MODE_FROM_KEY.get(key, "Balanced"))
+        ctk.CTkLabel(qual, text="Render mode", font=FONT_SMALL, text_color=MUTED).pack(anchor="w", padx=18, pady=(4, 4))
+        self.mode_seg = ctk.CTkSegmentedButton(
+            qual, values=list(MODE_LABELS.keys()), variable=self.mode_var, height=40,
+            corner_radius=10, font=FONT_SMALL,
+            selected_color=PURPLE, selected_hover_color="#9178ff",
+            unselected_color=CARD2, unselected_hover_color="#2c3344",
+            text_color=TEXT, command=self._on_mode,
+        )
+        self.mode_seg.pack(fill="x", padx=18, pady=(0, 10))
+        self.mode_desc = ctk.CTkLabel(qual, text="", font=FONT_SMALL,
+                                      text_color=MUTED, wraplength=880, justify="left")
+        self.mode_desc.pack(anchor="w", padx=18, pady=(0, 16))
+        qual.pack(fill="x", pady=(0, 12))
 
-        ttk.Label(tab, text=(
-            "Tip: choose Fast (turbo) for quick previews, then Best quality for clips you want to publish. "
-            "You can still fine-tune the speech model and checkboxes in the Make Clips tab."
-        ), style="OnBg.TLabel", wraplength=900, justify="left").pack(anchor="w", pady=(12, 0))
+        save_card = ctk.CTkFrame(scroll, corner_radius=16, fg_color=CARD,
+                                 border_width=1, border_color=BORDER)
+        save_row = ctk.CTkFrame(save_card, fg_color="transparent")
+        save_row.pack(fill="x", padx=18, pady=16)
+        self.save_btn = ctk.CTkButton(
+            save_row, text="Save settings", width=170, height=44, corner_radius=12,
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            fg_color=PURPLE, hover_color="#9178ff", command=self.save_clicked,
+        )
+        self.save_btn.pack(side="left")
+        self.saved_label = ctk.CTkLabel(save_row, text="", font=FONT_SMALL, text_color=GREEN)
+        self.saved_label.pack(side="left", padx=16)
+        ctk.CTkLabel(save_row, text="Saves AI keys, aspect ratio and speed mode for every future creation.",
+                     font=FONT_SMALL, text_color=MUTED).pack(side="left", padx=(0, 0))
+        save_card.pack(fill="x")
 
     # ------------------------------------------------------------------
     def _load_advanced(self):
         self._on_provider()
         self._on_aspect()
-        self._apply_mode()
+        self._on_mode()
 
-    def _on_provider(self, *_):
+    def _on_provider(self, _value=None):
         provider = PROVIDERS.get(self.provider_var.get(), "local")
-        if provider == "gemini" and not self.ai_model_var.get():
-            self.ai_model_var.set("gemini-2.5-flash")
+        if provider == "gemini":
+            current = self.ai_model_var.get().strip()
+            if not current or current.startswith(("llama", "gpt", "openai/", "mistral")):
+                self.ai_model_var.set(GEMINI_DEFAULT_MODEL)
         elif provider == "openai":
             if not self.base_var.get() or "localhost" in self.base_var.get():
-                self.base_var.set("http://localhost:11434/v1")
+                if not self.base_var.get():
+                    self.base_var.set("http://localhost:11434/v1")
             if not self.ai_model_var.get() or self.ai_model_var.get().startswith("gemini"):
                 self.ai_model_var.set("llama3.1")
 
-    def _toggle_key(self):
-        self.key_entry.configure(show="" if self.show_key.get() else "•")
+    def _on_aspect(self, _value=None):
+        custom = self.aspect_var.get() == "Custom"
+        state = "normal" if custom else "disabled"
+        self.cw_entry.configure(state=state)
+        self.ch_entry.configure(state=state)
+        if not custom and self.aspect_var.get() in ASPECT_SIZES:
+            w, h = ASPECT_SIZES[self.aspect_var.get()]
+            self.cw_var.set(str(w))
+            self.ch_var.set(str(h))
 
-    def _on_aspect(self, *_):
-        key = ASPECTS.get(self.aspect_var.get(), "9:16")
-        custom = key == "custom"
-        self.cw_spin.configure(state="normal" if custom else "disabled")
-        self.ch_spin.configure(state="normal" if custom else "disabled")
-        if not custom and key in ASPECT_SIZES:
-            w, h = ASPECT_SIZES[key]
-            self.cw_var.set(w)
-            self.ch_var.set(h)
-
-    def _apply_mode(self, *_):
-        preset = MODES.get(self.mode_var.get(), MODES["Balanced"])
+    def _on_mode(self, _value=None):
+        preset = MODES.get(MODE_LABELS.get(self.mode_var.get(), "balanced"), MODES["balanced"])
         self.whisper_var.set(preset["whisper"])
         self.face_var.set(preset["face"])
         self.norm_var.set(preset["normalize"])
@@ -347,6 +415,47 @@ class App:
         self.cfg.set("speed.face_interval", preset["face_interval"])
         self.cfg.set("speed.candidates", preset["candidates"])
         self.mode_desc.configure(text=preset["desc"])
+
+    # ------------------------------------------------------------------
+    def _reset_connection(self, *_):
+        if getattr(self, "conn_dot", None) is None:
+            return
+        self.conn_dot.configure(text_color=MUTED)
+        self.conn_label.configure(text="Not checked — settings changed, check again",
+                                  text_color=MUTED)
+
+    def _on_ai_field_change(self, *_):
+        # Auto-switch the provider when a recognisable key is pasted, so a Google
+        # AI Studio key is never sent to a local Ollama server by mistake.
+        key = self.key_var.get().strip().strip('"').strip("'")
+        if key.startswith(("AIza", "AQ.")):
+            if self.provider_var.get() != "Gemini API":
+                self.provider_var.set("Gemini API")
+                self._on_provider()
+        elif key.startswith(("sk-", "sk_")):
+            if self.provider_var.get() != "OpenAI / Ollama / OpenRouter":
+                self.provider_var.set("OpenAI / Ollama / OpenRouter")
+                self._on_provider()
+        self._reset_connection()
+
+    def check_connection_clicked(self):
+        if self.checking:
+            return
+        self._save_settings()  # test exactly what creation will use
+        self.checking = True
+        self.conn_btn.configure(state="disabled", text="Checking…")
+        self.conn_dot.configure(text_color=YELLOW)
+        self.conn_label.configure(text="Checking…", text_color=YELLOW)
+        threading.Thread(target=self._connection_worker, daemon=True).start()
+        self.root.after(80, self._poll)
+
+    def _connection_worker(self):
+        try:
+            from core.ai import test_connection
+            status = test_connection(self.cfg)
+        except Exception as exc:
+            status = {"ok": False, "message": str(exc)[:180], "latency_ms": 0}
+        self.q.put(("connection", status))
 
     # ------------------------------------------------------------------
     def _log(self, level, message):
@@ -381,12 +490,18 @@ class App:
             os.startfile(self.result["output_dir"])  # noqa - Windows
 
     # ------------------------------------------------------------------
+    def _int(self, var, default: int) -> int:
+        try:
+            return int(str(var.get()).strip())
+        except (ValueError, TypeError):
+            return default
+
     def _save_settings(self):
-        self._apply_mode()
+        self._on_mode()
         self.cfg.update({
-            "general.clips_per_video": int(self.clips_var.get()),
-            "general.min_seconds": int(self.min_var.get()),
-            "general.max_seconds": int(self.max_var.get()),
+            "general.clips_per_video": self._int(self.clips_var, 5),
+            "general.min_seconds": self._int(self.min_var, 12),
+            "general.max_seconds": self._int(self.max_var, 45),
             "general.language": self.lang_var.get().strip(),
             "general.output_dir": self.out_var.get().strip(),
             "whisper.model": self.whisper_var.get(),
@@ -398,12 +513,17 @@ class App:
             "ai.api_key": self.key_var.get().strip(),
             "ai.base_url": self.base_var.get().strip(),
             "ai.model": self.ai_model_var.get().strip(),
-            "quality.mode": self.mode_var.get(),
-            "video.aspect": ASPECTS.get(self.aspect_var.get(), "9:16"),
-            "video.custom_width": int(self.cw_var.get()),
-            "video.custom_height": int(self.ch_var.get()),
+            "quality.mode": MODE_LABELS.get(self.mode_var.get(), "balanced"),
+            "video.aspect": "custom" if self.aspect_var.get() == "Custom" else self.aspect_var.get(),
+            "video.custom_width": self._int(self.cw_var, 1080),
+            "video.custom_height": self._int(self.ch_var, 1920),
         })
         self.cfg.save()
+
+    def save_clicked(self):
+        self._save_settings()
+        self.saved_label.configure(text="✓ Saved — ready for your next creation")
+        self.root.after(2600, lambda: self.saved_label.configure(text=""))
 
     def start(self):
         if self.running:
@@ -422,9 +542,9 @@ class App:
 
         self.running = True
         self.result = None
-        self.go_btn.configure(state="disabled", text="WORKING...")
+        self.go_btn.configure(state="disabled", text="WORKING…", fg_color="#7a3048")
         self.open_btn.configure(state="disabled")
-        self.progress["value"] = 0
+        self.progress.set(0)
         self.logbox.delete("1.0", "end")
         self._log("HEAD", f"Starting: {source}")
         threading.Thread(target=self._worker, args=(source,), daemon=True).start()
@@ -446,14 +566,28 @@ class App:
                 if kind == "log":
                     self._log(item[1], item[2])
                 elif kind == "progress":
-                    self.progress["value"] = item[1]
-                    self.status.configure(text=item[2][:34])
+                    self.progress.set(item[1] / 100.0)
+                    self.status.configure(text=item[2][:32])
+                elif kind == "connection":
+                    self.checking = False
+                    st = item[1]
+                    self.conn_btn.configure(state="normal", text="Check connection")
+                    if st["ok"]:
+                        self.conn_dot.configure(text_color=GREEN)
+                        self.conn_label.configure(
+                            text=f"Connected · {st['latency_ms']} ms · {st['message']}",
+                            text_color=GREEN,
+                        )
+                    else:
+                        self.conn_dot.configure(text_color=RED)
+                        self.conn_label.configure(text=f"Failed · {st['message']}",
+                                                  text_color=RED)
                 elif kind == "done":
                     self.result = item[1]
                     self.running = False
-                    self.progress["value"] = 100
+                    self.progress.set(1.0)
                     self.status.configure(text="Finished")
-                    self.go_btn.configure(state="normal", text="MAKE VIRAL CLIPS")
+                    self.go_btn.configure(state="normal", text="MAKE VIRAL CLIPS", fg_color=PINK)
                     self.open_btn.configure(state="normal")
                     self._log("OK", f"Finished! {len(self.result['clips'])} clips in {self.result['output_dir']}")
                     messagebox.showinfo(
@@ -461,21 +595,25 @@ class App:
                         f"Created {len(self.result['clips'])} clips!\n\n{self.result['output_dir']}\n\n"
                         "Open the folder to watch and upload them.",
                     )
+                    if self.checking:
+                        self.root.after(80, self._poll)
                     return
                 elif kind == "error":
                     self.running = False
                     self.status.configure(text="Failed")
-                    self.go_btn.configure(state="normal", text="MAKE VIRAL CLIPS")
+                    self.go_btn.configure(state="normal", text="MAKE VIRAL CLIPS", fg_color=PINK)
                     self._log("ERROR", item[1])
                     messagebox.showerror("Could not finish", item[1][:600])
+                    if self.checking:
+                        self.root.after(80, self._poll)
                     return
         except queue.Empty:
             pass
-        if self.running:
+        if self.running or self.checking:
             self.root.after(80, self._poll)
 
 
 def launch():
-    root = tk.Tk()
+    root = ctk.CTk()
     App(root)
     root.mainloop()

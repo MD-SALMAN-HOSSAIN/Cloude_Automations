@@ -88,12 +88,28 @@ downloads the speech model once.
 
 - **Optional AI / API** — by far the default is **Local (free - no key)**. If you want smarter
   moment picking and AI-written titles/hooks, choose a provider:
-  - **Gemini API** — get a free key at <https://aistudio.google.com/apikey>, model `gemini-2.5-flash`.
+  - **Gemini API** — get a free key at <https://aistudio.google.com/apikey>, model `gemini-3.5-flash-lite`
+    (fast and reliable). Just pasting a Google key (`AIza…` or `AQ.…`) automatically switches the
+    provider to Gemini. If Google retires or overloads a model, the app automatically tries other
+    available models and remembers the one that works — so an outdated model name never breaks it.
   - **OpenAI-compatible** — works with local **Ollama** / **LM Studio** (`http://localhost:11434/v1`,
     model e.g. `llama3.1`), **OpenRouter** (`https://openrouter.ai/api/v1`), OpenAI, or any server
     that speaks the `/chat/completions` API.
   - Keys are stored only in `%APPDATA%\ViralClipMake\settings.json` on this PC. If the API fails or
     the key is empty, the app **automatically falls back to the free local moment picker**.
+- **Check connection** — the green button in the AI card performs a real, lightweight live request to
+  the configured provider and shows a colored status dot: **green = connected** (with response time
+  in ms), **red = failed** (with the actual error, e.g. an invalid key or unreachable server). In
+  **Local** mode it confirms the free engine is ready with no API needed. Changing any key, URL or
+  model resets the dot to "Not checked" so you never trust a stale result. The check runs in the
+  background, so the window never freezes.
+- **Save settings** — the purple **Save settings** button at the bottom of this tab writes all of
+  these choices (API key/provider/model, aspect ratio and speed mode) to disk immediately, ready to
+  be used during every future creation. You'll see a green "✓ Saved" confirmation. Settings are also
+  saved automatically whenever you press **MAKE VIRAL CLIPS**.
+
+The window uses a modern rounded dark UI (CustomTkinter) with hover effects, animated fade-in,
+segmented controls and toggles.
 - **Output size** — choose `9:16` (Shorts/TikTok/Reels), `1:1`, `4:5`, `3:4`, `16:9`, or a **Custom**
   width × height. Captions, cropping and thumbnails all adapt to the chosen size.
 - **Speed / Quality** — pick a mode:

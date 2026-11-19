@@ -3,8 +3,8 @@ Set-Location $PSScriptRoot
 
 Write-Host "=== Viral Clip Make - .exe build ===" -ForegroundColor Cyan
 
-Write-Host "[1/4] Making sure PyInstaller is installed..."
-python -m pip install --quiet pyinstaller
+Write-Host "[1/4] Making sure PyInstaller and CustomTkinter are installed..."
+python -m pip install --quiet pyinstaller customtkinter
 
 Write-Host "[2/4] Locating FFmpeg..."
 $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
@@ -28,6 +28,7 @@ python -m PyInstaller --noconfirm --clean --onedir --windowed `
     --collect-binaries "ctranslate2" `
     --collect-binaries "tokenizers" `
     --collect-data "faster_whisper" `
+    --collect-all "customtkinter" `
     app.py
 
 Write-Host "[4/4] Done." -ForegroundColor Green

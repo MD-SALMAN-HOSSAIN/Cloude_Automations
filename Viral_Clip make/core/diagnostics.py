@@ -36,6 +36,26 @@ def doctor() -> Path:
     return out
 
 
+def api_check() -> Path:
+    from .ai import test_connection
+    from .config import Config
+
+    cfg = Config()
+    status = test_connection(cfg)
+    lines = [
+        "Viral Clip Make - API connection check",
+        f"provider : {status['provider']}",
+        f"model    : {status['model']}",
+        f"ok       : {status['ok']}",
+        f"latency  : {status['latency_ms']} ms",
+        f"message  : {status['message']}",
+    ]
+    out = _report_file("api_check.txt")
+    out.write_text("\n".join(lines), encoding="utf-8")
+    print("\n".join(lines))
+    return out
+
+
 def selftest() -> Path:
     path = _report_file("selftest_result.txt")
     try:

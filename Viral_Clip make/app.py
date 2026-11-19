@@ -26,10 +26,12 @@ def _write_crash(exc_text: str):
 
 
 def main():
-    if "--doctor" in sys.argv or "--selftest" in sys.argv:
-        from core.diagnostics import doctor, selftest
+    if any(flag in sys.argv for flag in ("--doctor", "--selftest", "--api-check")):
+        from core.diagnostics import api_check, doctor, selftest
         if "--doctor" in sys.argv:
             doctor()
+        if "--api-check" in sys.argv:
+            api_check()
         if "--selftest" in sys.argv:
             selftest()
         return

@@ -9,6 +9,48 @@ from pathlib import Path
 from .moments import Moment
 from .util import Logger, clamp
 
+# Google retired gemini-2.5-flash for new API keys and the newest flash models
+# are often overloaded, so default to a fast, widely available one.
+GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite"
+
+# Tried in order if the configured model is unavailable (404/429/503).
+GEMINI_FALLBACK_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+]
+
+
+def _retryable(exc: Exception) -> bool:
+    text = str(exc).upper()
+    return any(code in text for code in
+               ("404", "429", "503", "NOT_FOUND", "UNAVAILABLE", "RESOURCE_EXHAUSTED"))
+
+
+def _gemini_generate(client, cfg, contents, gen_cfg=None):
+    """Generate with automatic fallback to another available Gemini model."""
+    configured = str(cfg.get("ai.model", "") or "").strip()
+    models = ([configured] if configured else []) + [
+        m for m in GEMINI_FALLBACK_MODELS if m != configured
+    ]
+    last = None
+    for name in models:
+        try:
+            response = client.models.generate_content(
+                model=name, contents=contents, config=gen_cfg
+            )
+            if name != configured:
+                cfg.set("ai.model", name)  # remember the working model
+            return response
+        except Exception as exc:
+            if not _retryable(exc):
+                raise  # invalid key / auth errors must not be hidden
+            last = exc
+    raise last
+
 
 def _extract_json(text: str) -> str:
     text = (text or "").strip()
@@ -28,10 +70,12 @@ def _call_gemini(prompt: str, cfg) -> str:
     if not key:
         raise RuntimeError("Gemini API key is empty. Add it in the AI tab or choose Local mode.")
     client = genai.Client(api_key=key)
-    response = client.models.generate_content(
-        model=str(cfg.get("ai.model", "gemini-2.5-flash") or "gemini-2.5-flash"),
-        contents=prompt,
-    )
+    try:
+        from google.genai import types
+        gen_cfg = types.GenerateContentConfig(max_output_tokens=8192)
+    except Exception:
+        gen_cfg = None
+    response = _gemini_generate(client, cfg, prompt, gen_cfg=gen_cfg)
     return response.text or ""
 
 
@@ -179,3 +223,86 @@ def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger) -> 
     except Exception as exc:
         log.warn("AI selection failed (%s) - falling back to free local scoring", exc)
         return None
+
+
+def test_connection(cfg, log: Logger | None = None) -> dict:
+    """Live end-to-end check of the configured provider. Never raises.
+
+    Returns: {ok, provider, model, message, latency_ms}
+    """
+    import time
+
+    provider = str(cfg.get("ai.provider", "local") or "local").lower()
+    model = str(cfg.get("ai.model", "") or "").strip()
+    started = time.perf_counter()
+
+    def result(ok: bool, message: str) -> dict:
+        return {
+            "ok": bool(ok),
+            "provider": provider,
+            "model": model,
+            "message": message,
+            "latency_ms": max(0, int((time.perf_counter() - started) * 1000)),
+        }
+
+    def err(exc: Exception) -> str:
+        text = " ".join(str(exc).split())
+        return (text or exc.__class__.__name__)[:600]
+
+    if provider == "local":
+        return result(True, "Local engine ready - no API needed")
+
+    if provider == "gemini":
+        key = str(cfg.get("ai.api_key", "") or "").strip()
+        if not key:
+            return result(False, "No API key entered - add your Gemini key above")
+        try:
+            from google import genai
+
+            client = genai.Client(api_key=key)
+            try:
+                from google.genai import types
+                gen_cfg = types.GenerateContentConfig(max_output_tokens=16)
+            except Exception:
+                gen_cfg = None
+            _gemini_generate(client, cfg, "Reply with OK", gen_cfg=gen_cfg)
+            working = str(cfg.get("ai.model", "") or model or GEMINI_DEFAULT_MODEL)
+            return result(True, f"Connected - {working} responded")
+        except Exception as exc:
+            return result(False, f"Gemini: {err(exc)}")
+
+    if provider == "openai":
+        base = str(cfg.get("ai.base_url", "") or "").strip().rstrip("/")
+        if not base:
+            return result(False, "No Base URL entered")
+        if not model:
+            return result(False, "No model name entered")
+        key = str(cfg.get("ai.api_key", "") or "").strip()
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        try:
+            import requests
+
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with OK"}],
+                "max_tokens": 8,
+                "temperature": 0,
+            }
+            response = requests.post(base + "/chat/completions", headers=headers,
+                                     json=payload, timeout=30)
+            if response.status_code == 400:
+                # Some reasoning models reject max_tokens - retry without it.
+                payload.pop("max_tokens", None)
+                response = requests.post(base + "/chat/completions", headers=headers,
+                                         json=payload, timeout=30)
+            if response.status_code >= 400:
+                detail = " ".join(response.text.split())[:120]
+                return result(False, f"HTTP {response.status_code}: {detail}")
+            response.json()["choices"][0]["message"]["content"]
+            return result(True, f"Connected - {model} responded")
+        except Exception as exc:
+            return result(False, err(exc))
+
+    return result(False, f"Unknown provider: {provider}")
