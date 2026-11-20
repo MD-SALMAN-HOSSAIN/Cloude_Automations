@@ -73,6 +73,21 @@ def main():
     for m in moments:
         print(f"  moment {m.start:5.1f}-{m.end:5.1f}s  score={m.score:5.1f}  hook={m.hook!r}")
 
+    # 4. Smart style decision (free local path) -----------------------------
+    from core import style
+
+    cfg.set("ai.provider", "local")  # keep the smoke test deterministic/offline
+    fake_track = {
+        "width": info.width, "height": info.height, "sample_interval": 0.5,
+        "samples": [{"t": t, "face_x": 0.45, "face_y": 0.4, "face_conf": 0.9,
+                     "motion_x": None, "motion_y": None, "motion_conf": 0}
+                    for t in (0.0, 0.5, 1.0, 1.5, 2.0)],
+    }
+    decisions = style.choose_styles(moments, fake_track, cfg, log, info=info)
+    assert len(decisions) == len(moments)
+    for d in decisions:
+        print(f"  style {d.framing:9s} ({d.source}) - {d.reason}")
+
     print("\nSELFTEST PASSED")
 
 

@@ -191,12 +191,23 @@ def _simplify(points, epsilon, max_points=80):
     return result
 
 
-def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, cfg) -> dict:
+def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, cfg,
+               focus_x: float = 0.5, focus_y: float = 0.42) -> dict:
+    """Build a smoothed crop path that keeps the subject at the chosen focus point.
+
+    focus_y defaults to slightly above centre so word captions along the bottom
+    of a Short never cover the subject's face.
+    """
     src_w = track.get("width") or 1920
     src_h = track.get("height") or 1080
     samples = track.get("samples") or []
     if not samples:
         return {"x": ([0.0], [0.0]), "y": ([0.0], [0.0]), "face_coverage": 0.0}
+
+    max_x, max_y = max(0, src_w - crop_w), max(0, src_h - crop_h)
+    fx = clamp(focus_x, 0.25, 0.75)
+    fy = clamp(focus_y, 0.25, 0.65)
+    pad = clamp(float(cfg.get("video.crop_padding", 0.06) or 0), 0, 0.30)
 
     interval = float(track.get("sample_interval", 0.5))
     inside = [s for s in samples if start - interval <= s["t"] <= end + interval] or samples
@@ -220,8 +231,23 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
             cx, cy = last_motion
         else:
             cx, cy = 0.5, 0.5
-        xs.append(clamp(cx * src_w - crop_w / 2, 0, max(0, src_w - crop_w)))
-        ys.append(clamp(cy * src_h - crop_h / 2, 0, max(0, src_h - crop_h)))
+
+        sx, sy = cx * src_w, cy * src_h
+        x = clamp(sx - crop_w * fx, 0, max_x)
+        y = clamp(sy - crop_h * fy, 0, max_y)
+        # Keep a margin around the subject where the source has room for it.
+        local_x = (sx - x) / max(1, crop_w)
+        if local_x < pad and x > 0:
+            x = clamp(sx - crop_w * pad, 0, max_x)
+        elif local_x > 1 - pad and x < max_x:
+            x = clamp(sx - crop_w * (1 - pad), 0, max_x)
+        local_y = (sy - y) / max(1, crop_h)
+        if local_y < pad and y > 0:
+            y = clamp(sy - crop_h * pad, 0, max_y)
+        elif local_y > 1 - pad and y < max_y:
+            y = clamp(sy - crop_h * (1 - pad), 0, max_y)
+        xs.append(x)
+        ys.append(y)
         times.append(t)
 
     if len(times) < 2:
@@ -233,8 +259,8 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
     span = max(0.1, end - start)
     xpts = _simplify([(times[i], xs[i]) for i in range(len(times))], max(3.0, crop_w * 0.02))
     ypts = _simplify([(times[i], ys[i]) for i in range(len(times))], max(3.0, crop_h * 0.02))
-    kt, kx = [p[0] for p in xpts], [clamp(p[1], 0, max(0, src_w - crop_w)) for p in xpts]
-    yt, yv = [p[0] for p in ypts], [clamp(p[1], 0, max(0, src_h - crop_h)) for p in ypts]
+    kt, kx = [p[0] for p in xpts], [clamp(p[1], 0, max_x) for p in xpts]
+    yt, yv = [p[0] for p in ypts], [clamp(p[1], 0, max_y) for p in ypts]
     if kt and kt[0] > 0:
         kt.insert(0, 0.0); kx.insert(0, kx[0])
     if kt and kt[-1] < span:
@@ -247,4 +273,5 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
     return {
         "x": (kt, kx), "y": (yt, yv),
         "face_coverage": face_hits / max(1, len(inside)),
+        "focus_x": fx, "focus_y": fy,
     }

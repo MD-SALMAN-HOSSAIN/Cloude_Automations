@@ -72,6 +72,10 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
 
 1. **Video source** — paste a YouTube/online link or press **Browse file**.
 2. **Settings** (defaults are fine):
+   - **Clip style / framing** — **AI picks best** is the default. It measures the subject in each
+     moment and chooses a subject-following crop or a whole-frame look with correct subject view and
+     cropping. Set an AI provider in the *AI & Output* tab to let the model decide; without one it
+     uses the free local heuristic. You can also force a style manually.
    - **Clips per video** — how many shorts to make (1–15).
    - **Min / Max seconds** — clip length window (e.g. 12–45 s).
    - **Speech model** — `tiny` (fastest) → `base` (recommended) → `small` / `medium` (more accurate, slower).
@@ -153,6 +157,22 @@ Notes: Upload-Post's free plan includes 10 uploads/month and TikTok publishing r
 check <https://upload-post.com/pricing>. The app shows the plan/email returned by the API when you
 check the key. Your key is stored only in `%APPDATA%\ViralClipMake\settings.json`.
 
+### A published clip shows 0 views after 24 hours — what to check
+
+The render quality cannot by itself make a platform serve a post. A post with exactly **0 views** is
+usually one of these, not a video-editing problem:
+
+| Check | What to look at |
+|---|---|
+| Public link | The Publish log now prints the public post URL returned by Upload-Post when it finishes. Open it while signed out — if you cannot see the post, it is private or still in review. |
+| Platform plan | TikTok publishing needs a paid Upload-Post plan. On the free plan a request can be accepted but never appear on TikTok. |
+| Status | If the log says `failed` / `rejected` or shows no link after `completed`, check the platform app for a moderation/reused-content notice. |
+| Account | Brand-new accounts and accounts with no followers often get almost no initial distribution. Post consistently for a couple of weeks before judging a single clip. |
+| Duplicates | The same clip, caption or audio uploaded repeatedly is treated as spam. Make one distinct edit per post. |
+
+The Publish tab's **Wait for publish confirmation** option should stay on: it is what surfaces the
+final status and public link in the log.
+
 ---
 
 ## 4. What you get
@@ -170,8 +190,8 @@ For every clip, in `Output folder\<date>\`:
 
 ## 5. How the "viral" scoring works (locally, free)
 
-Since there is no paid AI to call, the moment picker scores candidate windows using measurable
-signals from the video itself:
+When no AI provider is configured, the free local moment picker scores candidate windows using
+measurable signals from the video itself:
 
 - **Speech density** — words per second (fast talking keeps attention).
 - **Audio energy** — louder/excited sections score higher.
@@ -184,13 +204,29 @@ signals from the video itself:
 Overlapping candidates are removed (non-maximum suppression) so you get distinct moments, sorted
 and capped at your chosen clip count.
 
+### AI-chosen clip style (best variant)
+
+With **Clip style → AI picks best**, each moment is measured before rendering: face coverage, motion
+coverage, subject position/spread and source vs output aspect ratio. Your configured AI provider
+(Gemini / OpenAI-compatible) picks the best framing per clip:
+
+- **Follow subject** — crop and pan with the face/action. The crop keeps a margin around the subject
+  and places it slightly above the word captions.
+- **Whole frame (blurred)** — full picture on a blurred vertical canvas (best for gameplay / wide
+  action, nothing is cut).
+- **Whole frame (black bars)** — clean bars instead of a blur.
+
+No API key, or an AI error? The free local heuristic makes the same choice automatically. Each clip's
+`.txt` / `.json` records the chosen style, reason and source (`ai` / `local` / `manual`).
+
 ---
 
-## 6. Uploading (manual by design)
+## 6. Manual upload (optional)
 
-Open the output folder, watch the clips, delete any you don't like, then upload to YouTube Shorts,
-TikTok or Instagram Reels. Vertical 1080×1920 under 3 minutes is treated as a Short automatically.
-The `.txt` file has the title, description and hashtags — copy and paste them.
+If you prefer not to use the Publish tab, open the output folder, watch the clips, delete any you
+don't like, then upload to YouTube Shorts, TikTok or Instagram Reels yourself. Vertical 1080×1920
+under 3 minutes is treated as a Short automatically. The `.txt` file has the title, description and
+hashtags — copy and paste them.
 
 ---
 

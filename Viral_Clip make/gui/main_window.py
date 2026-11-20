@@ -55,6 +55,7 @@ MODE_LABELS = {"Fast": "fast", "Balanced": "balanced", "Best": "best"}
 MODE_FROM_KEY = {v: k for k, v in MODE_LABELS.items()}
 
 FRAMING_LABELS = {
+    "AI picks best (recommended)": "auto",
     "Fit whole frame (blurred)": "fit_blur",
     "Fit whole frame (black bars)": "fit_black",
     "Follow subject (crops sides)": "track",
@@ -227,7 +228,7 @@ class App:
         ctk.CTkLabel(frame_row, text="Video framing", font=FONT_SMALL,
                      text_color=MUTED).pack(anchor="w")
         self.framing_var = ctk.StringVar(value=FRAMING_FROM_KEY.get(
-            str(self.cfg.get("video.framing", "fit_blur")), "Fit whole frame (blurred)"))
+            str(self.cfg.get("video.framing", "auto")), "AI picks best (recommended)"))
         ctk.CTkSegmentedButton(
             frame_row, values=list(FRAMING_LABELS), variable=self.framing_var,
             height=36, corner_radius=10, font=FONT_SMALL,
@@ -237,7 +238,9 @@ class App:
         ).pack(fill="x", pady=(3, 3))
         ctk.CTkLabel(
             frame_row,
-            text="Gameplay / full-screen video: keep the whole picture. Person talking to camera: follow the subject.",
+            text="AI picks best measures the subject in every moment and chooses the crop or full-frame look. "
+                 "It uses your configured AI when available, otherwise a free local heuristic. "
+                 "Gameplay keeps the whole picture; a person talking to camera is followed.",
             font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left",
         ).pack(anchor="w")
 
@@ -511,10 +514,11 @@ class App:
         )
 
     def _on_framing(self, _value=None):
-        framing = FRAMING_LABELS.get(self.framing_var.get(), "fit_blur")
+        framing = FRAMING_LABELS.get(self.framing_var.get(), "auto")
         self.cfg.set("video.framing", framing)
         if getattr(self, "face_switch", None) is not None:
-            state = "normal" if framing == "track" else "disabled"
+            # Auto needs the subject track to make its decision.
+            state = "normal" if framing in ("track", "auto") else "disabled"
             self.face_switch.configure(state=state)
 
     def _on_device(self, _value=None):

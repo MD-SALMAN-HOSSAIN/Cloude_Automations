@@ -222,6 +222,7 @@ class RenderRequest:
     source_info: MediaInfo | None = None
     cfg: object = None
     quiet: bool = False
+    framing: str | None = None  # fit_blur | fit_black | track (overrides config)
 
 
 def render_clip(req: RenderRequest, log=None) -> dict:
@@ -232,24 +233,18 @@ def render_clip(req: RenderRequest, log=None) -> dict:
     fps = int(cfg.get("video.fps", 30))
     duration = max(0.5, req.end - req.start)
 
-    crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
-    max_x, max_y = max(0, info.width - crop_w), max(0, info.height - crop_h)
     req.out_path.parent.mkdir(parents=True, exist_ok=True)
     work = req.out_path.parent
     out_name = req.out_path.name
 
-    x_expr = "0"
-    if req.crop_x and max_x > 0:
-        times, values = req.crop_x
-        values = [clamp(v, 0, max_x) for v in values]
-        if max(values) - min(values) >= 1.5:
-            x_expr = path_expression(times, values, "t")
-    y_expr = "0"
-    if req.crop_y and max_y > 0:
-        times, values = req.crop_y
-        values = [clamp(v, 0, max_y) for v in values]
-        if max(values) - min(values) >= 1.5:
-            y_expr = path_expression(times, values, "t")
+    framing = str(req.framing or cfg.get("video.framing", "fit_blur") or "fit_blur").lower()
+    if framing not in ("fit_blur", "fit_black", "track"):
+        framing = "fit_blur"
+    trim_chain = [
+        f"trim=start={req.start:.3f}:end={req.end:.3f}",
+        "setpts=PTS-STARTPTS",
+        f"fps={fps}",
+    ]
 
     pre_chain = "highpass=f=70,acompressor=threshold=-18dB:ratio=2:attack=5:release=150"
     target_i = float(cfg.get("video.loudness_lufs", -14.0))
@@ -267,20 +262,62 @@ def render_clip(req: RenderRequest, log=None) -> dict:
     else:
         normalise = f"loudnorm=I={target_i}:TP={target_tp}:LRA=11"
 
-    v_chain = [
-        f"trim=start={req.start:.3f}:end={req.end:.3f}",
-        "setpts=PTS-STARTPTS",
-        f"fps={fps}",
-        f"crop=w={crop_w}:h={crop_h}:x='{x_expr}':y='{y_expr}'",
-        f"scale={width}:{height}:flags=lanczos",
-        "setsar=1",
-        "format=yuv420p",
-    ]
+    cap_name = ""
     if req.captions_ass is not None:
         cap_name = req.captions_ass.name.replace("\\", "/").replace(":", "\\:")
-        v_chain.append(f"subtitles=f={cap_name}")
 
-    graph = "[0:v]" + ",".join(v_chain) + "[v]"
+    if framing in ("fit_blur", "fit_black"):
+        # Whole frame visible: scale it down to fit the vertical canvas and fill
+        # the empty space (classic mobile gaming-shorts look). Nothing is cut.
+        base = ",".join(trim_chain)
+        if framing == "fit_blur":
+            graph = (
+                f"[0:v]{base},split=2[bg][fg];"
+                f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=bicubic,"
+                f"crop={width}:{height},boxblur=18:2,setsar=1[bgfit];"
+                f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[fgfit];"
+                f"[bgfit][fgfit]overlay=(W-w)/2:(H-h)/2:shortest=1[fitv]"
+            )
+        else:
+            graph = (
+                f"[0:v]{base},"
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[fitv]"
+            )
+        if cap_name:
+            graph += f";[fitv]subtitles=f={cap_name},format=yuv420p[v]"
+        else:
+            graph += ";[fitv]format=yuv420p[v]"
+        if log:
+            log.info("Framing: whole frame visible (%s background)",
+                     "blurred" if framing == "fit_blur" else "black")
+    else:
+        # Subject-follow crop: fills the frame but necessarily cuts the sides.
+        crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
+        max_x, max_y = max(0, info.width - crop_w), max(0, info.height - crop_h)
+        x_expr = "0"
+        if req.crop_x and max_x > 0:
+            times, values = req.crop_x
+            values = [clamp(v, 0, max_x) for v in values]
+            if max(values) - min(values) >= 1.5:
+                x_expr = path_expression(times, values, "t")
+        y_expr = "0"
+        if req.crop_y and max_y > 0:
+            times, values = req.crop_y
+            values = [clamp(v, 0, max_y) for v in values]
+            if max(values) - min(values) >= 1.5:
+                y_expr = path_expression(times, values, "t")
+        v_chain = trim_chain + [
+            f"crop=w={crop_w}:h={crop_h}:x='{x_expr}':y='{y_expr}'",
+            f"scale={width}:{height}:flags=lanczos",
+            "setsar=1",
+            "format=yuv420p",
+        ]
+        if cap_name:
+            v_chain.append(f"subtitles=f={cap_name}")
+        graph = "[0:v]" + ",".join(v_chain) + "[v]"
     if info.has_audio:
         graph += (
             f";[0:a]atrim=start={req.start:.3f}:end={req.end:.3f},asetpts=PTS-STARTPTS,"
@@ -296,28 +333,64 @@ def render_clip(req: RenderRequest, log=None) -> dict:
     filter_file = work / "filter_graph.txt"
     filter_file.write_text(graph, encoding="utf-8")
 
-    cmd = [
-        ffmpeg_bin(), "-hide_banner", "-y", "-nostdin",
-        "-i", str(req.source.resolve()),
-        "-filter_complex", graph,
-        *maps,
-        "-c:v", "libx264",
-        "-preset", str(cfg.get("video.preset", "medium")),
-        "-crf", str(cfg.get("video.crf", 20)),
-        "-profile:v", "high", "-level", "4.2",
-        "-g", str(fps * 2),
-        "-pix_fmt", "yuv420p",
-        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-        *audio_args,
-        "-movflags", "+faststart",
-        "-shortest",
-        "-t", f"{duration + 0.2:.3f}",
-        out_name,
-    ]
-    proc = run(cmd, cwd=work, timeout=max(300, int(duration * 30)))
-    if proc.returncode != 0 or not (work / out_name).exists():
-        tail = "\n".join((proc.stderr or "").strip().splitlines()[-12:])
+    from .hardware import preferred_encoder
+
+    crf = int(cfg.get("video.crf", 20) or 20)
+    preset = str(cfg.get("video.preset", "medium") or "medium")
+    encoder = preferred_encoder(cfg)
+    bitrate = f"{max(3, int(round((40 - crf) * 0.6)))}M"
+
+    def _video_args(enc: str) -> list[str]:
+        if enc == "h264_nvenc":
+            return ["-c:v", enc, "-preset", "p4", "-cq", str(crf), "-b:v", "0",
+                    "-profile:v", "high"]
+        if enc == "h264_qsv":
+            return ["-c:v", enc, "-preset", "medium", "-b:v", bitrate]
+        if enc == "h264_amf":
+            return ["-c:v", enc, "-quality", "balanced", "-b:v", bitrate]
+        return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+                "-profile:v", "high", "-level", "4.2"]
+
+    out_file = work / out_name
+    attempts = [encoder] if encoder == "libx264" else [encoder, "libx264"]
+    used = "libx264"
+    for attempt, enc in enumerate(attempts):
+        if out_file.exists():
+            try:
+                out_file.unlink()
+            except OSError:
+                pass
+        cmd = [
+            ffmpeg_bin(), "-hide_banner", "-y", "-nostdin",
+            "-i", str(req.source.resolve()),
+            "-filter_complex", graph,
+            *maps,
+            *_video_args(enc),
+            "-g", str(fps * 2),
+            "-pix_fmt", "yuv420p",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+            *audio_args,
+            "-movflags", "+faststart",
+            "-shortest",
+            "-t", f"{duration + 0.2:.3f}",
+            out_name,
+        ]
+        proc = run(cmd, cwd=work, timeout=max(300, int(duration * 30)))
+        if proc.returncode == 0 and out_file.exists():
+            used = enc
+            break
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-10:])
+        if attempt == 0:
+            if log:
+                log.warn("Hardware encoder %s failed - retrying on CPU: %s", enc, tail[-180:])
+            continue
         raise RuntimeError(f"FFmpeg render failed:\n{tail}")
+
+    if log:
+        if used == "libx264" and encoder != "libx264":
+            log.info("Video encoded on CPU (hardware encoder was unavailable)")
+        else:
+            log.info("Video encoded with %s", used)
 
     out = probe(req.out_path)
     try:

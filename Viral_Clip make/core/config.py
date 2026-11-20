@@ -37,7 +37,10 @@ def default_settings() -> dict:
         "whisper.device": "auto",          # auto | cpu | cuda
         "whisper.compute_type": "auto",    # auto -> int8 on CPU, float16 on GPU
         "render.encoder": "auto",          # auto | cpu | gpu (falls back to CPU)
-        "video.framing": "fit_blur",       # fit_blur | fit_black | track
+        "video.framing": "auto",           # auto (AI picks) | fit_blur | fit_black | track
+        "video.subject_focus_y": 0.42,     # subject sits above captions in a tracked crop
+        "video.crop_padding": 0.06,        # keep this margin around a tracked subject
+        "ai.auto_style": True,             # let the AI choose framing per clip when available
         "features.face_track": True,
         "features.captions": True,
         "features.hook": True,
@@ -120,6 +123,11 @@ class Config:
                             and self.data.get("whisper.compute_type") == "int8"):
                         self.data["whisper.device"] = "auto"
                         self.data["whisper.compute_type"] = "auto"
+                    # One-time upgrade: installs saved before AI styling existed used a
+                    # fixed framing. Flip them to the new smart default.
+                    if "ai.auto_style" not in saved and self.data.get("video.framing") in (
+                            "fit_blur", "fit_black", "track"):
+                        self.data["video.framing"] = "auto"
         except Exception:
             pass
 

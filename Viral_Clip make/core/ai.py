@@ -57,10 +57,25 @@ def _extract_json(text: str) -> str:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```\s*$", "", text)
-    start, end = text.find("["), text.rfind("]")
-    if start >= 0 and end > start:
-        return text[start:end + 1]
+    starts = [i for i in (text.find("["), text.find("{")) if i >= 0]
+    ends = [i for i in (text.rfind("]"), text.rfind("}")) if i >= 0]
+    if starts and ends:
+        start, end = min(starts), max(ends)
+        if end > start:
+            return text[start:end + 1]
     return text
+
+
+def ask_json(prompt: str, cfg):
+    """Ask the configured provider for JSON (list or object). Returns None in local mode."""
+    provider = str(cfg.get("ai.provider", "local") or "local").lower()
+    if provider == "gemini":
+        raw = _call_gemini(prompt, cfg)
+    elif provider == "openai":
+        raw = _call_openai_compatible(prompt, cfg)
+    else:
+        return None
+    return json.loads(_extract_json(raw))
 
 
 def _call_gemini(prompt: str, cfg) -> str:

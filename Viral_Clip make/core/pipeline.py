@@ -6,7 +6,7 @@ from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
 
-from . import ai, faces
+from . import ai, faces, style
 from .audio import decode_audio, rms_curve
 from .captions import build_ass, write_ass
 from .downloader import fetch
@@ -94,26 +94,34 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         )
 
     # 5. Framing / subject tracking -----------------------------------------
-    framing = str(cfg.get("video.framing", "fit_blur") or "fit_blur").lower()
-    if framing not in ("fit_blur", "fit_black", "track"):
-        framing = "fit_blur"
+    framing = str(cfg.get("video.framing", "auto") or "auto").strip().lower()
+    if framing not in ("auto", "fit_blur", "fit_black", "track"):
+        framing = "auto"
     track = None
     crop_w = crop_h = 0
-    if framing == "track":
-        if bool(cfg.get("features.face_track", True)):
-            _report(progress, 53, "Tracking the subject for 9:16 framing...")
-            cache = cfg.cache_dir / (video.stem + ".track.json")
-            track = faces.analyse_video(
-                video, cfg, log, cache_path=cache,
-                sample_interval=float(cfg.get("speed.face_interval", 0.5)),
-                max_seconds=analysis_seconds,
-            )
-        else:
-            log.info("Face tracking off - using centre crop")
+    # Auto mode measures the subject so the AI / heuristic can choose a style.
+    # Turning face tracking off is still respected: auto then prefers whole frame.
+    need_track = (bool(cfg.get("features.face_track", True))
+                  and framing in ("auto", "track"))
+    if need_track:
+        _report(progress, 53, "Tracking the subject for smart framing...")
+        cache = cfg.cache_dir / (video.stem + ".track.json")
+        track = faces.analyse_video(
+            video, cfg, log, cache_path=cache,
+            sample_interval=float(cfg.get("speed.face_interval", 0.5)),
+            max_seconds=analysis_seconds,
+        )
+    elif framing == "track":
+        log.info("Face tracking off - using centre crop")
+    elif framing == "auto":
+        log.info("Face tracking off - auto style will prefer the whole frame")
+    if framing == "track" or framing == "auto":
         crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
     else:
         log.info("Framing: whole video visible in %s (no content cut, no face lock)",
                  "a blurred vertical canvas" if framing == "fit_blur" else "black bars")
+
+    decisions = style.choose_styles(moments, track, cfg, log, info=info)
 
     # 6. Render each clip ----------------------------------------------------
     out_root = Path(str(cfg.get("general.output_dir")))
@@ -144,16 +152,21 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         else:
             ass_path = None
 
+        decision = decisions[index - 1]
+        clip_framing = decision.framing
         crop_x = crop_y = None
-        if track:
-            path = faces.build_path(track, moment.start, moment.end, crop_w, crop_h, cfg)
+        if track and crop_w and clip_framing == "track":
+            path = faces.build_path(
+                track, moment.start, moment.end, crop_w, crop_h, cfg,
+                focus_x=decision.focus_x, focus_y=decision.focus_y,
+            )
             crop_x, crop_y = path["x"], path["y"]
 
         req = RenderRequest(
             source=video, start=moment.start, end=moment.end,
             out_path=out_path, captions_ass=ass_path,
             crop_x=crop_x, crop_y=crop_y, source_info=info, cfg=cfg,
-            framing=framing,
+            framing=clip_framing,
         )
         render_info = render_clip(req, log=log)
         make_thumbnail(out_path, day_dir / (name + ".jpg"),
@@ -166,6 +179,8 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             f"Source time : {moment.start:.1f}s - {moment.end:.1f}s\n"
             f"Hook        : {moment.hook}\n"
             f"Signals     : {moment.reason}\n"
+            f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
+            f"({decision.source}: {decision.reason})\n"
             f"Source      : {source}\n\n"
             f"Description : {moment.title} — full video on the channel.\n\n"
             f"#shorts #viral #clip #{_slug(moment.title).replace('-', '')}\n"
@@ -173,6 +188,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         (day_dir / (name + ".txt")).write_text(txt, encoding="utf-8")
         (day_dir / (name + ".json")).write_text(
             json.dumps({"moment": moment.__dict__, "render": render_info,
+                        "style": decision.as_dict(),
                         "source": str(video), "made_with": "Viral Clip Make (100% free)"},
                        indent=2),
             encoding="utf-8",
@@ -189,8 +205,11 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             "title": moment.title,
             "score": moment.score,
             "duration": round(moment.end - moment.start, 1),
+            "style": clip_framing,
+            "style_reason": decision.reason,
         })
-        log.ok("Clip %d/%d ready: %s (%s/100)", index, total, name, moment.score)
+        log.ok("Clip %d/%d ready: %s (%s/100, %s)", index, total, name,
+               moment.score, style.STYLE_LABELS.get(clip_framing, clip_framing))
 
     _report(progress, 97, "Done - finishing up...")
     return {

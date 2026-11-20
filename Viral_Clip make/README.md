@@ -21,7 +21,7 @@ link / file  →  local Whisper transcript  →  local viral-moment scoring  →
 |---|---|
 | Price | Free forever (MIT-style, all components open source) |
 | API keys | **None required** |
-| Cloud / GPU | **None** — everything runs on your PC's CPU |
+| Cloud / GPU | **None required** — runs on CPU, auto-uses your NVIDIA GPU when available |
 | Watermark / limits | None |
 | "AI" moment detection | Local scoring engine (speech energy, keywords, pacing, hooks, silence) |
 | Speech-to-text | faster-whisper, running locally |
@@ -82,12 +82,13 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
    - **Speech model** — `tiny` (fastest) → `base` (recommended) → `small` / `medium` (more accurate, slower).
      Press the **?** button in the app for a full plain-English explanation of each model.
    - **Language** — leave blank for auto-detect, or type a two-letter code such as `en`, `hi`, `es`.
-   - **Video framing** — **Fit whole frame (blurred)** is the default: the entire video stays visible
-     in a vertical Short with a blurred background, so gameplay or full-screen content is never cut.
-     Choose **Fit whole frame (black bars)** for clean bars, or **Follow subject (crops sides)** when
-     the clip is a person talking to camera.
+   - **Video framing** — **AI picks best (recommended)** is the default: the tool measures the subject
+     in every moment and chooses either a subject-following crop or a whole-frame look, with the
+     subject kept slightly above the captions. If you configured an AI provider it makes the choice;
+     otherwise a free local heuristic does. You can still force **Fit whole frame (blurred / black
+     bars)** or **Follow subject (crops sides)** yourself.
    - **Output folder** — where finished clips are saved.
-   - Toggles for face tracking (only active in *Follow subject* mode), captions, hook overlay and
+   - Toggles for face tracking (needed for AI/auto framing), captions, hook overlay and
      audio normalization.
 3. Press **MAKE VIRAL CLIPS**. Watch the progress bar and activity log.
 4. When it finishes, press **Open output folder** and upload the clips you like.
@@ -165,6 +166,23 @@ signals from the video itself:
 
 Overlapping candidates are removed (non-maximum suppression) so you get distinct moments, sorted
 and capped at your chosen clip count.
+
+### AI-chosen clip style (best variant)
+
+With **Video framing → AI picks best**, every moment is measured before rendering: face coverage,
+motion coverage, subject position/spread and the source vs output aspect ratio. The configured AI
+provider (Gemini / OpenAI-compatible; set it in the *AI & Output* tab) then picks the best look per
+clip:
+
+- **Follow subject** — crop into the vertical canvas and pan with the face/action. The crop keeps a
+  margin around the subject and places it slightly above the caption area.
+- **Whole frame (blurred)** — the entire picture stays visible on a blurred vertical background.
+  Best for gameplay or wide action where cutting the sides would lose context.
+- **Whole frame (black bars)** — clean bars instead of a blur.
+
+No key? The same decision is made by a free local heuristic, and any AI failure automatically falls
+back to it. The chosen style, its reason and its source (`ai` / `local` / `manual`) are saved in each
+clip's `.txt` and `.json`.
 
 ---
 

@@ -34,8 +34,13 @@ def default_settings() -> dict:
         "video.crf": 20,
         "video.preset": "medium",
         "whisper.model": "base",
-        "whisper.device": "cpu",
-        "whisper.compute_type": "int8",
+        "whisper.device": "auto",          # auto | cpu | cuda
+        "whisper.compute_type": "auto",    # auto -> int8 on CPU, float16 on GPU
+        "render.encoder": "auto",          # auto | cpu | gpu (falls back to CPU)
+        "video.framing": "auto",           # auto (AI picks) | fit_blur | fit_black | track
+        "video.subject_focus_y": 0.42,     # subject sits above captions in a tracked crop
+        "video.crop_padding": 0.06,        # keep this margin around a tracked subject
+        "ai.auto_style": True,             # let the AI choose framing per clip when available
         "features.face_track": True,
         "features.captions": True,
         "features.hook": True,
@@ -118,6 +123,15 @@ class Config:
                 saved = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(saved, dict):
                     self.data.update(saved)
+                    # One-time upgrade from the old fixed-crop / CPU-only settings.
+                    if ("render.encoder" not in saved and "video.framing" not in saved
+                            and self.data.get("whisper.device") == "cpu"
+                            and self.data.get("whisper.compute_type") == "int8"):
+                        self.data["whisper.device"] = "auto"
+                        self.data["whisper.compute_type"] = "auto"
+                    if "ai.auto_style" not in saved and self.data.get("video.framing") in (
+                            None, "fit_blur", "fit_black", "track"):
+                        self.data["video.framing"] = "auto"
         except Exception:
             pass
 

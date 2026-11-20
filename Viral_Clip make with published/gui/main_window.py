@@ -57,6 +57,14 @@ ASPECT_SIZES = {"9:16": (1080, 1920), "1:1": (1080, 1080), "4:5": (1080, 1350),
 MODE_LABELS = {"Fast": "fast", "Balanced": "balanced", "Best": "best"}
 MODE_FROM_KEY = {v: k for k, v in MODE_LABELS.items()}
 
+FRAMING_LABELS = {
+    "AI picks best (recommended)": "auto",
+    "Fit whole frame (blurred)": "fit_blur",
+    "Fit whole frame (black bars)": "fit_black",
+    "Follow subject (crops sides)": "track",
+}
+FRAMING_FROM_KEY = {v: k for k, v in FRAMING_LABELS.items()}
+
 MODES = {
     "fast": {
         "whisper": "tiny", "crf": 26, "preset": "veryfast", "face": False,
@@ -202,6 +210,24 @@ class App:
         ctk.CTkEntry(grid, textvariable=self.lang_var, width=110, height=36,
                      corner_radius=9, font=FONT, placeholder_text="auto").grid(row=1, column=7, sticky="w", pady=(3, 10))
 
+        frame_row = ctk.CTkFrame(settings, fg_color="transparent")
+        frame_row.pack(fill="x", padx=18, pady=(0, 2))
+        ctk.CTkLabel(frame_row, text="Clip style / framing", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w")
+        self.framing_var = ctk.StringVar(value=FRAMING_FROM_KEY.get(
+            str(self.cfg.get("video.framing", "auto")), "AI picks best (recommended)"))
+        ctk.CTkComboBox(
+            frame_row, variable=self.framing_var, values=list(FRAMING_LABELS),
+            width=420, height=36, corner_radius=9, state="readonly",
+            font=FONT, dropdown_font=FONT, command=self._on_framing,
+        ).pack(anchor="w", pady=(3, 2))
+        ctk.CTkLabel(
+            frame_row,
+            text="AI picks best measures the subject per clip and chooses crop vs full frame "
+                 "(uses your AI provider when set, otherwise the free local engine).",
+            font=FONT_SMALL, text_color=MUTED, wraplength=840, justify="left",
+        ).pack(anchor="w")
+
         out_row = ctk.CTkFrame(settings, fg_color="transparent")
         out_row.pack(fill="x", padx=18, pady=(0, 6))
         self.out_var = ctk.StringVar(value=str(self.cfg.get("general.output_dir")))
@@ -222,9 +248,12 @@ class App:
         self.norm_var = ctk.BooleanVar(value=bool(self.cfg.get("features.normalize_audio", True)))
         for text, var in (("Face tracking", self.face_var), ("Captions", self.cap_var),
                           ("Hook overlay", self.hook_var), ("Normalize audio", self.norm_var)):
-            ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
-                          font=FONT_SMALL, progress_color=PINK,
-                          fg_color="#33394a").pack(side="left", padx=(0, 18))
+            switch = ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
+                                   font=FONT_SMALL, progress_color=PINK,
+                                   fg_color="#33394a")
+            switch.pack(side="left", padx=(0, 18))
+            if text == "Face tracking":
+                self.face_switch = switch
         settings.pack(fill="x", pady=(0, 10))
 
         self.go_btn = ctk.CTkButton(
@@ -787,6 +816,7 @@ class App:
         self._on_provider()
         self._on_aspect()
         self._on_mode()
+        self._on_framing()
 
     def _on_provider(self, _value=None):
         provider = PROVIDERS.get(self.provider_var.get(), "local")
@@ -800,6 +830,14 @@ class App:
                     self.base_var.set("http://localhost:11434/v1")
             if not self.ai_model_var.get() or self.ai_model_var.get().startswith("gemini"):
                 self.ai_model_var.set("llama3.1")
+
+    def _on_framing(self, _value=None):
+        framing = FRAMING_LABELS.get(self.framing_var.get(), "auto")
+        self.cfg.set("video.framing", framing)
+        if getattr(self, "face_switch", None) is not None:
+            # Auto framing measures the subject, so keep tracking available.
+            state = "normal" if framing in ("track", "auto") else "disabled"
+            self.face_switch.configure(state=state)
 
     def _on_aspect(self, _value=None):
         custom = self.aspect_var.get() == "Custom"
@@ -911,6 +949,7 @@ class App:
             "general.language": self.lang_var.get().strip(),
             "general.output_dir": self.out_var.get().strip(),
             "whisper.model": self.whisper_var.get(),
+            "video.framing": FRAMING_LABELS.get(self.framing_var.get(), "auto"),
             "features.face_track": bool(self.face_var.get()),
             "features.captions": bool(self.cap_var.get()),
             "features.hook": bool(self.hook_var.get()),

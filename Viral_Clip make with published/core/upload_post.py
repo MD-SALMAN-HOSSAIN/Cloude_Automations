@@ -58,6 +58,27 @@ def _err(exc: Exception) -> str:
     return " ".join(str(exc).split())[:250]
 
 
+def extract_links(value, depth: int = 0) -> list[str]:
+    """Find public post URLs anywhere in an API response."""
+    found: list[str] = []
+    if depth > 6:
+        return found
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = str(key).lower()
+            if (isinstance(item, str) and item.startswith(("http://", "https://"))
+                    and any(token in name for token in ("url", "link", "post", "share"))):
+                found.append(item.strip())
+            else:
+                found.extend(extract_links(item, depth + 1))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found.extend(extract_links(item, depth + 1))
+    elif isinstance(value, str) and value.startswith(("http://", "https://")):
+        found.append(value.strip())
+    return list(dict.fromkeys(found))
+
+
 def _account_info(value) -> dict:
     """Normalise one social_accounts entry (object, string, null or '')."""
     if isinstance(value, dict):
@@ -249,6 +270,7 @@ def upload_clip(path: Path, cfg, title: str, description: str = "",
         "message": payload.get("message") or "Upload started",
         "platforms": list(platforms),
         "caption": caption,
+        "links": extract_links(payload),
     }
 
 
@@ -308,7 +330,17 @@ def publish_clips(clips: list[Path], cfg, log: Logger,
                 )
                 sent["status"] = final.get("status", "")
                 sent["results"] = final.get("results") or []
+                links = extract_links(final)
+                sent["links"] = list(dict.fromkeys(sent.get("links", []) + links))
                 log.ok("Publish result: %s", sent["status"])
+                if sent["links"]:
+                    log.ok("Public post link(s): %s", " | ".join(sent["links"][:4]))
+                elif str(sent["status"]).lower() in ("completed", "success", "published"):
+                    log.warn("Upload completed but no public link was returned. Open the "
+                             "platform app to confirm the post is public (not private/review).")
+                if str(sent["status"]).lower() in ("failed", "rejected", "error"):
+                    log.warn("Platform rejected this upload: %s",
+                             str(final.get("message") or final.get("error") or sent["status"])[:200])
             results.append(sent)
         except Exception as exc:
             msg = _err(exc)
