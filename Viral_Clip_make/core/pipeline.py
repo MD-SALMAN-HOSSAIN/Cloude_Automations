@@ -10,8 +10,8 @@ from . import ai, cleanup, faces, style
 from .audio import decode_audio, rms_curve
 from .captions import build_ass, write_ass
 from .downloader import fetch
-from .ffmpeg_tools import (crop_geometry, make_thumbnail, probe, render_clip,
-                           RenderRequest)
+from .ffmpeg_tools import (crop_geometry, facecam_layout, make_thumbnail, probe,
+                           render_clip, RenderRequest)
 from .moments import find_moments
 from .transcribe import transcribe
 from .util import Logger
@@ -103,10 +103,12 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         framing = "auto"
     track = None
     crop_w = crop_h = 0
+    facecam_on = bool(cfg.get("features.facecam_pip", False))
+    facecam = None
     # Auto mode measures the subject so the AI / heuristic can choose a style.
     # Turning face tracking off is still respected: auto then prefers whole frame.
-    need_track = (bool(cfg.get("features.face_track", True))
-                  and framing in ("auto", "track"))
+    need_track = (facecam_on or (bool(cfg.get("features.face_track", True))
+                                 and framing in ("auto", "track")))
     if need_track:
         _report(progress, 53, "Tracking the subject for smart framing...")
         cache = cfg.cache_dir / (video.stem + ".track.json")
@@ -119,7 +121,16 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         log.info("Face tracking off - using centre crop")
     elif framing == "auto":
         log.info("Face tracking off - auto style will prefer the whole frame")
-    if framing == "track" or framing == "auto":
+    if facecam_on:
+        corner = str(cfg.get("video.facecam_corner", "auto") or "auto").lower()
+        facecam = faces.find_facecam(track, corner=corner) if track else None
+        if facecam:
+            log.ok("Facecam found in the %s corner - webcam goes in a circle, subject stays centred",
+                   facecam["corner"])
+        else:
+            log.warn("Facecam option is on but no corner webcam was detected - using normal framing")
+
+    if framing in ("track", "auto") or facecam:
         crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
     else:
         log.info("Framing: whole video visible in %s (no content cut, no face lock)",
@@ -127,7 +138,8 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
 
     if provider != "local" and bool(cfg.get("ai.auto_style", True)):
         _report(progress, 58, f"AI ({provider}) is choosing the best framing per clip...")
-    decisions = style.choose_styles(moments, track, cfg, log, info=info)
+    decisions = style.choose_styles(moments, track, cfg, log, info=info,
+                                    ignore_rect=facecam)
 
     # 6. Render each clip ----------------------------------------------------
     out_root = Path(str(cfg.get("general.output_dir")))
@@ -137,6 +149,11 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     stamp = datetime.now().strftime("%H%M%S")
     results = []
     total = len(moments)
+    hook_margin = None
+    if facecam:
+        # Keep the hook below the circle instead of behind it.
+        bubble = facecam_layout(cfg, facecam, width, height)
+        hook_margin = bubble["y"] + bubble["size"] + max(16, int(width * 0.035))
 
     for index, moment in enumerate(moments, 1):
         pct = 60 + (34.0 * (index - 1) / max(1, total))
@@ -153,18 +170,24 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
 
         if bool(cfg.get("features.captions", True)) and relative:
             ass_text = build_ass(relative, moment.hook, moment.end - moment.start,
-                                 cfg, show_hook=bool(cfg.get("features.hook", True)))
+                                 cfg, show_hook=bool(cfg.get("features.hook", True)),
+                                 hook_margin=hook_margin)
             write_ass(ass_path, ass_text)
         else:
             ass_path = None
 
         decision = decisions[index - 1]
         clip_framing = decision.framing
+        focus_x, focus_y = decision.focus_x, decision.focus_y
+        if facecam:
+            # The webcam is an inset now: the real subject owns the centre.
+            clip_framing = "track"
+            focus_x, focus_y = 0.5, 0.45
         crop_x = crop_y = None
         if track and crop_w and clip_framing == "track":
             path = faces.build_path(
                 track, moment.start, moment.end, crop_w, crop_h, cfg,
-                focus_x=decision.focus_x, focus_y=decision.focus_y,
+                focus_x=focus_x, focus_y=focus_y, ignore_rect=facecam,
             )
             crop_x, crop_y = path["x"], path["y"]
 
@@ -172,7 +195,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             source=video, start=moment.start, end=moment.end,
             out_path=out_path, captions_ass=ass_path,
             crop_x=crop_x, crop_y=crop_y, source_info=info, cfg=cfg,
-            framing=clip_framing,
+            framing=clip_framing, facecam=facecam,
         )
         try:
             render_info = render_clip(req, log=log)
@@ -189,7 +212,9 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                 f"Signals     : {moment.reason}\n"
                 f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
                 f"({decision.source}: {decision.reason})\n"
-                f"Source      : {source}\n\n"
+                + (f"Layout      : facecam bubble in top {facecam['corner']} corner, "
+                   f"subject centred\n" if facecam else "")
+                + f"Source      : {source}\n\n"
                 f"Description : {moment.title} — full video on the channel.\n\n"
                 f"#shorts #viral #clip #{_slug(moment.title).replace('-', '')}\n"
             )
@@ -197,6 +222,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             (day_dir / (name + ".json")).write_text(
                 json.dumps({"moment": moment.__dict__, "render": render_info,
                             "style": decision.as_dict(),
+                            "facecam": facecam if facecam else None,
                             "source": str(video), "made_with": "Viral Clip Make (100% free)"},
                            indent=2),
                 encoding="utf-8",

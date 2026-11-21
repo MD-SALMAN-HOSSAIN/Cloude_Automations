@@ -93,7 +93,13 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
      bars)** or **Follow subject (crops sides)** yourself.
    - **Output folder** — where finished clips are saved.
    - Toggles for face tracking (needed for AI/auto framing), captions, hook overlay and
-     audio normalization.
+     audio normalization and **Facecam bubble**.
+    - **Facecam bubble** (off by default) - for videos with a presenter webcam in a corner of
+      the original frame (the popular gaming-shorts look). The tiny free face detector spots a
+      small face that stays in one corner, then puts that person in a circular inset in the top
+      corner while the real subject/gameplay is cropped and centred underneath.
+      **Facecam corner** can be **Auto (detect)**, **Top left** or **Top right**. If no corner webcam
+      is found, the clip renders normally. The hook text moves below the circle so it stays readable.
 3. Press **MAKE VIRAL CLIPS**. Watch the progress bar and activity log.
 4. When it finishes, press **Open output folder** and upload the clips you like.
 
@@ -253,6 +259,7 @@ Viral_Clip make\
 | First run is slow / hanging | It is downloading the Whisper model once (~150 MB). Later runs are cached. |
 | Captions wrong language | Set the **Language** field, e.g. `en`. |
 | Face crop is off | Turn face tracking off for a centre crop, or use footage with a clearer subject. |
+| Facecam bubble did not appear | The **Facecam bubble** switch only fires when a small face stays in a top corner of the original video. Check the activity log: it says whether a webcam was found. Pick **Top left** / **Top right** explicitly if Auto picked the wrong side. Videos without a webcam are rendered normally. |
 | App window shows an error | Details are saved to `%APPDATA%\ViralClipMake\crash.log`. |
 | Low scores / poor picks | Feed livelier footage with clear speech; try a longer min/max window. |
 | Verify the built .exe | Run `dist\ViralClipMake\ViralClipMake.exe --doctor --selftest` and read `%APPDATA%\ViralClipMake\doctor.txt` and `selftest_result.txt`. |

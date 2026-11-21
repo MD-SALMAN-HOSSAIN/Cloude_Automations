@@ -49,6 +49,8 @@ class Sample:
     t: float
     face_x: float | None = None
     face_y: float | None = None
+    face_w: float = 0.0
+    face_h: float = 0.0
     face_conf: float = 0.0
     motion_x: float | None = None
     motion_y: float | None = None
@@ -61,7 +63,8 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
     if cache_path and cache_path.exists() and path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if (cached.get("samples") and cached.get("sample_interval") == sample_interval
+            if (cached.get("version") == 2 and cached.get("samples")
+                    and cached.get("sample_interval") == sample_interval
                     and cached.get("mtime") == path.stat().st_mtime):
                 log.info("Using cached subject track (%d samples)", len(cached["samples"]))
                 return cached
@@ -113,6 +116,8 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
                     conf = float(best[-1]) if len(best) >= 15 else 0.8
                     sample.face_x = (x + fw / 2) / small.shape[1]
                     sample.face_y = (y + fh / 2) / small.shape[0]
+                    sample.face_w = fw / small.shape[1]
+                    sample.face_h = fh / small.shape[0]
                     sample.face_conf = max(0.2, min(1.0, conf))
 
             # Motion centroid: follows the action when no face is visible.
@@ -139,6 +144,7 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
         "height": height,
         "frame_count": total,
         "sample_interval": sample_interval,
+        "version": 2,  # v2 adds face_w/face_h for corner-facecam detection
         "samples": [s.__dict__ for s in samples],
     }
     if cache_path:
@@ -148,6 +154,81 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
             pass
     log.info("Subject track analysed (%d samples)", len(samples))
     return data
+
+
+def _median_num(values):
+    return float(sorted(values)[len(values) // 2]) if values else 0.0
+
+
+def find_facecam(track: dict, corner: str = "auto") -> dict | None:
+    """Find a small, persistent webcam bubble in a corner of the source video.
+
+    A talking-head clip has one big face near the middle - that is the subject,
+    not a facecam. A facecam is a *small* face that stays in one corner while
+    the rest of the frame is the real content. Returns a normalised crop rect
+    in source coordinates, or None when no facecam is found.
+    """
+    samples = track.get("samples") or []
+    if len(samples) < 4:
+        return None
+    src_w = float(track.get("width") or 1920)
+    src_h = float(track.get("height") or 1080)
+    faces = [s for s in samples
+             if s.get("face_x") is not None and (s.get("face_conf") or 0) >= 0.20
+             and (s.get("face_w") or 0) > 0 and (s.get("face_h") or 0) > 0]
+    if len(faces) < max(3, int(len(samples) * 0.15)):
+        return None
+
+    # Small face, near a corner / upper part of the frame.
+    candidates = []
+    for s in faces:
+        x, y = float(s["face_x"]), float(s.get("face_y") or 0.45)
+        w, h = float(s["face_w"]), float(s["face_h"])
+        if (x < 0.34 or x > 0.66) and y < 0.38 and w < 0.34 and h < 0.55:
+            candidates.append((float(s.get("t", 0.0)), x, y, w, h))
+    if len(candidates) < max(3, int(len(samples) * 0.10)):
+        return None
+    if len(candidates) < len(faces) * 0.45:
+        return None
+
+    # The bubble must be there throughout the clip, not just in one moment.
+    times = [float(s.get("t", 0.0)) for s in samples]
+    mid = (max(times) / 2.0) if times else 0.0
+    if not any(t <= mid for t, *_ in candidates) or not any(t > mid for t, *_ in candidates):
+        return None
+
+    cx = _median_num([c[1] for c in candidates])
+    cy = _median_num([c[2] for c in candidates])
+    # A real webcam stays put. Scattered one-off detections (game characters,
+    # thumbnails) must not be mistaken for a facecam.
+    near = [c for c in candidates
+            if abs(c[1] - cx) <= 0.18 and abs(c[2] - cy) <= 0.22]
+    if len(near) < len(candidates) * 0.70:
+        return None
+    cx = _median_num([c[1] for c in near])
+    cy = _median_num([c[2] for c in near])
+    if cy > 0.34:  # a facecam lives near the top, not beside the captions
+        return None
+    face_px = _median_num([c[3] for c in near]) * src_w
+    face_py = _median_num([c[4] for c in near]) * src_h
+    side = max(face_px, face_py) * 1.7  # face + hair/shoulders
+    limit = min(src_w, src_h)
+    side = clamp(side, limit * 0.14, limit * 0.46)
+    x0 = clamp(cx * src_w - side / 2, 0, max(0, src_w - side))
+    y0 = clamp(cy * src_h - side / 2, 0, max(0, src_h - side))
+    chosen = str(corner or "auto").lower()
+    side_name = chosen if chosen in ("left", "right") else ("left" if cx < 0.5 else "right")
+    return {
+        "x": x0 / src_w, "y": y0 / src_h,
+        "w": side / src_w, "h": side / src_h,
+        "corner": side_name, "cx": cx, "cy": cy,
+        "coverage": round(len(candidates) / len(samples), 3),
+    }
+
+
+def _inside(px: float, py: float, rect: dict | None) -> bool:
+    return bool(rect and rect["x"] <= px <= rect["x"] + rect["w"]
+                and rect["y"] <= py <= rect["y"] + rect["h"])
 
 
 def _median(values, window=3):
@@ -192,11 +273,13 @@ def _simplify(points, epsilon, max_points=80):
 
 
 def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, cfg,
-               focus_x: float = 0.5, focus_y: float = 0.42) -> dict:
+               focus_x: float = 0.5, focus_y: float = 0.42,
+               ignore_rect: dict | None = None) -> dict:
     """Build a smoothed crop path that keeps the subject at the chosen focus point.
 
     focus_y defaults to slightly above centre so word captions along the bottom
-    of a Short never cover the subject's face.
+    of a Short never cover the subject's face. ``ignore_rect`` excludes a
+    corner facecam bubble so the crop follows the real content, not the host.
     """
     src_w = track.get("width") or 1920
     src_h = track.get("height") or 1080
@@ -218,7 +301,9 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
     for s in inside:
         t = clamp(s["t"] - start, 0.0, end - start)
         cx = cy = None
-        if s.get("face_x") is not None and (s.get("face_conf") or 0) >= 0.05:
+        if (s.get("face_x") is not None and (s.get("face_conf") or 0) >= 0.05
+                and not _inside(float(s["face_x"]), float(s.get("face_y") or 0.45),
+                                ignore_rect)):
             cx, cy = s["face_x"], s.get("face_y") or 0.45
             face_hits += 1
             last_face = (cx, cy)

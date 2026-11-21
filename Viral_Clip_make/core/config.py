@@ -47,6 +47,10 @@ def default_settings() -> dict:
         "video.crop_padding": 0.06,        # keep this margin around a tracked subject
         "ai.auto_style": True,             # let the AI choose framing per clip when available
         "features.face_track": True,
+        # Corner webcam (facecam) layout: bubble in a top corner, main subject centred.
+        "features.facecam_pip": False,
+        "video.facecam_corner": "auto",   # auto | left | right
+        "video.facecam_size": 0.30,        # bubble diameter / output width
         "features.captions": True,
         "features.hook": True,
         "features.normalize_audio": True,

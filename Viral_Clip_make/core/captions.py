@@ -69,7 +69,8 @@ def _groups(words, max_words=3, max_chars=17, max_gap=0.34):
     return groups
 
 
-def build_ass(words, hook: str, duration: float, cfg, show_hook: bool = True) -> str:
+def build_ass(words, hook: str, duration: float, cfg, show_hook: bool = True,
+              hook_margin: int | None = None) -> str:
     width = int(cfg.get("video.width", 1080))
     height = int(cfg.get("video.height", 1920))
     scale = width / 1080.0
@@ -80,7 +81,9 @@ def build_ass(words, hook: str, duration: float, cfg, show_hook: bool = True) ->
     font = str(cfg.get("style.caption_font", "Impact"))
     highlight = str(cfg.get("style.caption_highlight", "&H0000E5FF"))
     cap_margin = max(int(60 * scale), min(int(760 * scale), safe_bottom + int(cap_size * 0.55)))
-    hook_margin = max(int(90 * scale), int(height * 0.13))
+    if hook_margin is None:
+        hook_margin = max(int(90 * scale), int(height * 0.13))
+    hook_margin = int(hook_margin)
 
     header = ASS_HEADER.format(width=width, height=height, font=font,
                                hook_size=hook_size, caption_size=cap_size,

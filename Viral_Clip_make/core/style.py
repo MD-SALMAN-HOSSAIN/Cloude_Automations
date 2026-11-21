@@ -44,6 +44,11 @@ class StyleDecision:
         return asdict(self)
 
 
+def _in_rect(px: float, py: float, rect: dict | None) -> bool:
+    return bool(rect and rect["x"] <= px <= rect["x"] + rect["w"]
+                and rect["y"] <= py <= rect["y"] + rect["h"])
+
+
 def _empty_metrics() -> dict:
     return {
         "face_coverage": 0.0, "motion_coverage": 0.0,
@@ -53,7 +58,8 @@ def _empty_metrics() -> dict:
     }
 
 
-def moment_metrics(track: dict | None, moment, cfg, info=None) -> dict:
+def moment_metrics(track: dict | None, moment, cfg, info=None,
+                   ignore_rect: dict | None = None) -> dict:
     """Measure how a moment should be framed, from the cached subject track."""
     result = _empty_metrics()
     if info is not None:
@@ -77,8 +83,10 @@ def moment_metrics(track: dict | None, moment, cfg, info=None) -> dict:
 
     faces, motions, all_x, all_y = [], [], [], []
     for s in inside:
-        if s.get("face_x") is not None and (s.get("face_conf") or 0) >= 0.05:
-            p = (float(s["face_x"]), float(s.get("face_y") or 0.45))
+        fx, fy = s.get("face_x"), float(s.get("face_y") or 0.45)
+        if (fx is not None and (s.get("face_conf") or 0) >= 0.05
+                and not _in_rect(float(fx), fy, ignore_rect)):
+            p = (float(fx), fy)
             faces.append(p)
             all_x.append(p[0]); all_y.append(p[1])
         elif s.get("motion_x") is not None and (s.get("motion_conf") or 0) > 0.05:
@@ -236,12 +244,12 @@ MOMENTS:
 
 
 def choose_styles(moments: list, track: dict | None, cfg, log: Logger,
-                  info=None) -> list[StyleDecision]:
+                  info=None, ignore_rect: dict | None = None) -> list[StyleDecision]:
     """Return one framing decision per moment, in the same order."""
     configured = str(cfg.get("video.framing", "auto") or "auto").strip().lower()
     if configured not in FRAMINGS:
         configured = "auto"
-    metrics = [moment_metrics(track, m, cfg, info) for m in moments]
+    metrics = [moment_metrics(track, m, cfg, info, ignore_rect) for m in moments]
 
     if configured != "auto":
         focus_y = clamp(float(cfg.get("video.subject_focus_y", 0.42) or 0.42), 0.3, 0.58)

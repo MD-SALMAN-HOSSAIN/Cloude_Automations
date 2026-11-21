@@ -65,6 +65,9 @@ FRAMING_LABELS = {
 }
 FRAMING_FROM_KEY = {v: k for k, v in FRAMING_LABELS.items()}
 
+FACECAM_CORNERS = {"Auto (detect)": "auto", "Top left": "left", "Top right": "right"}
+CORNER_FROM_KEY = {v: k for k, v in FACECAM_CORNERS.items()}
+
 DEVICE_LABELS = {"Auto (recommended)": "auto", "CPU only": "cpu", "GPU (NVIDIA)": "cuda"}
 DEVICE_FROM_KEY = {v: k for k, v in DEVICE_LABELS.items()}
 ENCODER_LABELS = {"Auto (GPU if available)": "auto", "CPU only": "cpu", "GPU only": "gpu"}
@@ -297,14 +300,32 @@ class App:
         self.cap_var = ctk.BooleanVar(value=bool(self.cfg.get("features.captions", True)))
         self.hook_var = ctk.BooleanVar(value=bool(self.cfg.get("features.hook", True)))
         self.norm_var = ctk.BooleanVar(value=bool(self.cfg.get("features.normalize_audio", True)))
+        self.facecam_var = ctk.BooleanVar(value=bool(self.cfg.get("features.facecam_pip", False)))
         for text, var in (("Face tracking", self.face_var), ("Captions", self.cap_var),
-                          ("Hook overlay", self.hook_var), ("Normalize audio", self.norm_var)):
+                          ("Hook overlay", self.hook_var), ("Normalize audio", self.norm_var),
+                          ("Facecam bubble", self.facecam_var)):
             switch = ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
                                    font=FONT_SMALL, progress_color=PINK,
                                    fg_color="#33394a")
             switch.pack(side="left", padx=(0, 18))
             if text == "Face tracking":
                 self.face_switch = switch
+
+        fc_row = ctk.CTkFrame(settings, fg_color="transparent")
+        fc_row.pack(fill="x", padx=18, pady=(0, 8))
+        ctk.CTkLabel(fc_row, text="Facecam corner", font=FONT_SMALL,
+                     text_color=MUTED).pack(side="left", padx=(0, 8))
+        self.fc_corner_var = ctk.StringVar(value=CORNER_FROM_KEY.get(
+            str(self.cfg.get("video.facecam_corner", "auto")), "Auto (detect)"))
+        ctk.CTkComboBox(fc_row, variable=self.fc_corner_var,
+                        values=list(FACECAM_CORNERS), width=150, height=32,
+                        corner_radius=9, state="readonly", font=FONT_SMALL,
+                        dropdown_font=FONT_SMALL).pack(side="left")
+        ctk.CTkLabel(fc_row, text=(
+            "With the switch on, a webcam detected in a corner becomes a circle in the top "
+            "corner while the main subject stays centred. Auto finds the corner for you."
+        ), font=FONT_SMALL, text_color=MUTED, wraplength=610,
+            justify="left").pack(side="left", padx=(14, 0))
         settings.pack(fill="x", pady=(0, 10))
 
         self.go_btn = ctk.CTkButton(
@@ -829,6 +850,8 @@ class App:
             "features.captions": bool(self.cap_var.get()),
             "features.hook": bool(self.hook_var.get()),
             "features.normalize_audio": bool(self.norm_var.get()),
+            "features.facecam_pip": bool(self.facecam_var.get()),
+            "video.facecam_corner": FACECAM_CORNERS.get(self.fc_corner_var.get(), "auto"),
             "ai.provider": PROVIDERS.get(self.provider_var.get(), "local"),
             "ai.api_key": self.key_var.get().strip(),
             "ai.base_url": self.base_var.get().strip(),
