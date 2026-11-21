@@ -54,6 +54,10 @@ That opens the graphical window.
 
 **Double-click:** `build_exe.bat`
 
+Close any open Viral Clip Make window first — Windows locks the old `.exe` files and the build
+would otherwise keep running the previous version. The build script moves the old folder aside
+automatically and reports a real error if anything fails.
+
 It will:
 - install PyInstaller (free),
 - copy `ffmpeg.exe` / `ffprobe.exe` into the bundle,
@@ -120,6 +124,12 @@ downloads the speech model once.
   detects NVIDIA CUDA and FFmpeg hardware encoders (NVENC / QuickSync / AMF) at startup and shows
   what it found. GPU acceleration can make transcription and rendering several times faster. If a
   GPU is missing or fails, the app automatically falls back to the free CPU path — no setup needed.
+- **YouTube Download** — only needed if YouTube says *"Sign in to confirm you're not a bot"*.
+  **Auto** (the default) tries an anonymous download first, then reads cookies from Firefox, Chrome
+  and Edge until one works — Firefox is the most reliable on Windows. Pick a specific browser if you
+  know where you are signed in to YouTube, or point **cookies.txt** at a Netscape-format cookie file.
+  Cookies are read locally and never uploaded. **Player client** is an advanced escape hatch if a
+  YouTube client change breaks downloads.
 - **Save settings** — the purple **Save settings** button at the bottom of this tab writes all of
   these choices (API key/provider/model, hardware, framing, aspect ratio and speed mode) to disk
   immediately, ready to be used during every future creation. You'll see a green "✓ Saved"
@@ -225,7 +235,8 @@ Viral_Clip make\
 | Problem | Fix |
 |---|---|
 | "FFmpeg was not found" | `winget install Gyan.FFmpeg`, then restart the app; or place `ffmpeg.exe` in `bin\`. |
-| Download fails | Update yt-dlp: `python -m pip install -U yt-dlp`. Age-restricted videos need cookies (not supported by default). |
+| "Sign in to confirm you're not a bot" / download fails | Leave **AI & Output → YouTube Download → Browser cookies** on **Auto**: the app retries with Firefox/Chrome/Edge cookies. If that fails, choose the browser where you are signed in to YouTube (Firefox is most reliable on Windows) or supply a **cookies.txt**. Also update yt-dlp with `python -m pip install -U yt-dlp`. |
+| Age-restricted / members-only video | Use the same **YouTube Download** cookies setting above; anonymous downloads cannot access these videos. |
 | First run is slow / hanging | It is downloading the Whisper model once (~150 MB). Later runs are cached. |
 | Captions wrong language | Set the **Language** field, e.g. `en`. |
 | Face crop is off | Turn face tracking off for a centre crop, or use footage with a clearer subject. |

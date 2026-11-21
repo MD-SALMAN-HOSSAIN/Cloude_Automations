@@ -28,6 +28,11 @@ def default_settings() -> dict:
         "general.language": "",
         "general.max_minutes": 45,
         "general.download_height": 720,
+        # YouTube sometimes challenges anonymous downloads. "auto" tries
+        # anonymous first, then cookies from installed browsers (Firefox first).
+        "download.cookies_from_browser": "auto",  # auto | none | firefox | chrome | edge | ...
+        "download.cookies_file": "",              # optional Netscape cookies.txt path
+        "download.player_client": "default",      # default | tv | android | ios | ...
         "video.width": 1080,
         "video.height": 1920,
         "video.fps": 30,

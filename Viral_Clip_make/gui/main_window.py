@@ -67,6 +67,27 @@ DEVICE_FROM_KEY = {v: k for k, v in DEVICE_LABELS.items()}
 ENCODER_LABELS = {"Auto (GPU if available)": "auto", "CPU only": "cpu", "GPU only": "gpu"}
 ENCODER_FROM_KEY = {v: k for k, v in ENCODER_LABELS.items()}
 
+BROWSER_LABELS = {
+    "Auto (try installed browsers)": "auto",
+    "None (anonymous only)": "none",
+    "Firefox": "firefox",
+    "Chrome": "chrome",
+    "Edge": "edge",
+    "Brave": "brave",
+    "Opera": "opera",
+    "Vivaldi": "vivaldi",
+}
+BROWSER_FROM_KEY = {v: k for k, v in BROWSER_LABELS.items()}
+CLIENT_LABELS = {
+    "Auto (recommended)": "default",
+    "TV": "tv",
+    "Android": "android",
+    "iOS": "ios",
+    "Mobile web": "mweb",
+    "Web Safari": "web_safari",
+}
+CLIENT_FROM_KEY = {v: k for k, v in CLIENT_LABELS.items()}
+
 MODES = {
     "fast": {
         "whisper": "tiny", "crf": 26, "preset": "veryfast", "face": False,
@@ -368,6 +389,45 @@ class App:
             var.trace_add("write", lambda *_: self._on_ai_field_change())
         ai.pack(fill="x", pady=(0, 12))
 
+        yt = self._card(scroll, "YOUTUBE DOWNLOAD — ONLY NEEDED IF YOUTUBE BLOCKS YOU")
+        self.yt_browser_var = ctk.StringVar(value=BROWSER_FROM_KEY.get(
+            str(self.cfg.get("download.cookies_from_browser", "auto")),
+            "Auto (try installed browsers)"))
+        self.yt_cookie_var = ctk.StringVar(value=str(self.cfg.get("download.cookies_file", "") or ""))
+        self.yt_client_var = ctk.StringVar(value=CLIENT_FROM_KEY.get(
+            str(self.cfg.get("download.player_client", "default")), "Auto (recommended)"))
+
+        ctk.CTkLabel(yt, text="Browser cookies", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w", padx=18, pady=(4, 2))
+        ctk.CTkComboBox(yt, variable=self.yt_browser_var, values=list(BROWSER_LABELS),
+                        width=430, height=40, corner_radius=10, state="readonly",
+                        font=FONT, dropdown_font=FONT).pack(anchor="w", padx=18, pady=(0, 10))
+
+        ctk.CTkLabel(yt, text="Or a cookies.txt file (optional)", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w", padx=18, pady=(0, 2))
+        cookie_row = ctk.CTkFrame(yt, fg_color="transparent")
+        cookie_row.pack(fill="x", padx=18, pady=(0, 8))
+        ctk.CTkEntry(cookie_row, textvariable=self.yt_cookie_var, height=40,
+                     corner_radius=10, placeholder_text=r"C:\path\to\cookies.txt",
+                     font=FONT).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(cookie_row, text="Browse", width=90, height=40, corner_radius=10,
+                      fg_color=CARD2, hover_color="#2c3344", text_color=TEXT,
+                      font=FONT_SMALL, command=self.browse_cookies).pack(side="left", padx=(8, 0))
+
+        ctk.CTkLabel(yt, text="Player client", font=FONT_SMALL,
+                     text_color=MUTED).pack(anchor="w", padx=18, pady=(0, 2))
+        ctk.CTkComboBox(yt, variable=self.yt_client_var, values=list(CLIENT_LABELS),
+                        width=430, height=40, corner_radius=10, state="readonly",
+                        font=FONT, dropdown_font=FONT).pack(anchor="w", padx=18, pady=(0, 10))
+
+        ctk.CTkLabel(yt, text=(
+            "If you see \"Sign in to confirm you're not a bot\", choose the browser where you are "
+            "signed in to YouTube (Firefox works best on Windows). Auto tries Firefox, Chrome and "
+            "Edge for you. Cookies are read locally and never uploaded. A cookies.txt file works too."
+        ), font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left").pack(
+            anchor="w", padx=18, pady=(0, 14))
+        yt.pack(fill="x", pady=(0, 12))
+
         hw = self._card(scroll, "HARDWARE — USE YOUR GPU OR CPU")
         self.hw_info = ctk.CTkLabel(hw, text="Detecting hardware…", font=FONT_SMALL,
                                      text_color=YELLOW, wraplength=880, justify="left")
@@ -635,6 +695,14 @@ class App:
         if path:
             self.source_var.set(path)
 
+    def browse_cookies(self):
+        path = filedialog.askopenfilename(
+            title="Choose a Netscape cookies.txt file",
+            filetypes=[("Cookies file", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.yt_cookie_var.set(path)
+
     def paste_link(self):
         try:
             text = self.root.clipboard_get().strip()
@@ -678,6 +746,9 @@ class App:
             "ai.api_key": self.key_var.get().strip(),
             "ai.base_url": self.base_var.get().strip(),
             "ai.model": self.ai_model_var.get().strip(),
+            "download.cookies_from_browser": BROWSER_LABELS.get(self.yt_browser_var.get(), "auto"),
+            "download.cookies_file": self.yt_cookie_var.get().strip(),
+            "download.player_client": CLIENT_LABELS.get(self.yt_client_var.get(), "default"),
             "quality.mode": MODE_LABELS.get(self.mode_var.get(), "balanced"),
             "video.aspect": "custom" if self.aspect_var.get() == "Custom" else self.aspect_var.get(),
             "video.custom_width": self._int(self.cw_var, 1080),

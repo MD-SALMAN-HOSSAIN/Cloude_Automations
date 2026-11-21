@@ -18,6 +18,19 @@ Copy-Item $ffprobe "bin\ffprobe.exe" -Force
 Write-Host "      FFmpeg: $ffmpeg"
 
 Write-Host "[3/4] Building the Windows executable (this can take several minutes)..."
+# PyInstaller deletes dist\ViralClipMake before collecting. If the app is still
+# running, Windows locks those files and the build fails partway through. Move
+# the old folder aside instead of trying to delete it.
+$distDir = Join-Path $PSScriptRoot "dist\ViralClipMake"
+if (Test-Path $distDir) {
+    $backup = Join-Path $PSScriptRoot ("dist\ViralClipMake_backup_" + (Get-Date -Format "yyyyMMdd_HHmmss"))
+    try {
+        Rename-Item $distDir $backup -ErrorAction Stop
+        Write-Host "      Previous build moved to: $backup"
+    } catch {
+        Write-Host "      WARNING: could not move the old build: $($_.Exception.Message)"
+    }
+}
 python -m PyInstaller --noconfirm --clean --onedir --windowed `
     --name "ViralClipMake" `
     --paths "." `
@@ -30,6 +43,9 @@ python -m PyInstaller --noconfirm --clean --onedir --windowed `
     --collect-data "faster_whisper" `
     --collect-all "customtkinter" `
     app.py
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed with exit code $LASTEXITCODE. Close any running ViralClipMake window and try again."
+}
 
 Write-Host "[4/4] Done." -ForegroundColor Green
 Write-Host "Run it from:  dist\ViralClipMake\ViralClipMake.exe" -ForegroundColor Green
