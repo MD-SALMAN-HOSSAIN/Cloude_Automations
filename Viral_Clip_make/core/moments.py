@@ -243,7 +243,8 @@ def find_moments(transcript: dict, rms: list[float], cfg, log: Logger) -> list[M
         if len(picked) >= wanted:
             break
 
-    picked.sort(key=lambda m: m.start)
+    # Strongest moment first: clip 01 is the one people are most likely to share.
+    picked.sort(key=lambda m: m.score, reverse=True)
     log.ok("Selected %d local viral moments (top score %.1f/100)",
            len(picked), picked[0].score if picked else 0)
     return picked

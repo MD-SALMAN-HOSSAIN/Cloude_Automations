@@ -254,7 +254,7 @@ def choose_styles(moments: list, track: dict | None, cfg, log: Logger,
     decisions = None
     if bool(cfg.get("ai.auto_style", True)):
         provider = str(cfg.get("ai.provider", "local") or "local").lower()
-        if provider in ("gemini", "openai"):
+        if provider in ("gemini", "claude", "openai"):
             log.info("Asking %s to choose the best style per clip", provider)
             decisions = _ai_decide(moments, metrics, cfg, log)
     if decisions is None or len(decisions) != len(moments):

@@ -6,7 +6,7 @@ from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
 
-from . import ai, faces, style
+from . import ai, cleanup, faces, style
 from .audio import decode_audio, rms_curve
 from .captions import build_ass, write_ass
 from .downloader import fetch
@@ -81,8 +81,12 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         transcript = {"words": [], "segments": [], "duration": analysis_seconds,
                       "text": "", "language": None}
 
-    # 4. Score moments locally ----------------------------------------------
-    _report(progress, 46, "Scoring viral moments locally (no API)...")
+    # 4. Score moments -------------------------------------------------------
+    provider = str(cfg.get("ai.provider", "local") or "local").lower()
+    if provider == "local":
+        _report(progress, 46, "Scoring viral moments locally (no API)...")
+    else:
+        _report(progress, 46, f"AI ({provider}) is choosing the strongest moments...")
     rms = rms_curve(audio)
     moments = find_moments(transcript, rms, cfg, log)
     ai_moments = ai.enhance_moments(transcript, moments, cfg, log)
@@ -121,6 +125,8 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         log.info("Framing: whole video visible in %s (no content cut, no face lock)",
                  "a blurred vertical canvas" if framing == "fit_blur" else "black bars")
 
+    if provider != "local" and bool(cfg.get("ai.auto_style", True)):
+        _report(progress, 58, f"AI ({provider}) is choosing the best framing per clip...")
     decisions = style.choose_styles(moments, track, cfg, log, info=info)
 
     # 6. Render each clip ----------------------------------------------------
@@ -168,36 +174,43 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             crop_x=crop_x, crop_y=crop_y, source_info=info, cfg=cfg,
             framing=clip_framing,
         )
-        render_info = render_clip(req, log=log)
-        make_thumbnail(out_path, day_dir / (name + ".jpg"),
-                       at=min(1.5, (moment.end - moment.start) / 3), width=width)
+        try:
+            render_info = render_clip(req, log=log)
+            make_thumbnail(out_path, day_dir / (name + ".jpg"),
+                           at=min(1.5, (moment.end - moment.start) / 3), width=width)
 
-        txt = (
-            f"{moment.title}\n"
-            f"{'=' * len(moment.title)}\n\n"
-            f"Viral score : {moment.score}/100 (local signal engine)\n"
-            f"Source time : {moment.start:.1f}s - {moment.end:.1f}s\n"
-            f"Hook        : {moment.hook}\n"
-            f"Signals     : {moment.reason}\n"
-            f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
-            f"({decision.source}: {decision.reason})\n"
-            f"Source      : {source}\n\n"
-            f"Description : {moment.title} — full video on the channel.\n\n"
-            f"#shorts #viral #clip #{_slug(moment.title).replace('-', '')}\n"
-        )
-        (day_dir / (name + ".txt")).write_text(txt, encoding="utf-8")
-        (day_dir / (name + ".json")).write_text(
-            json.dumps({"moment": moment.__dict__, "render": render_info,
-                        "style": decision.as_dict(),
-                        "source": str(video), "made_with": "Viral Clip Make (100% free)"},
-                       indent=2),
-            encoding="utf-8",
-        )
-        if ass_path and ass_path.exists():
-            try:
-                ass_path.unlink()
-            except Exception:
-                pass
+            txt = (
+                f"{moment.title}\n"
+                f"{'=' * len(moment.title)}\n\n"
+                f"Viral score : {moment.score}/100 ("
+                f"{provider + ' AI pick' if provider != 'local' else 'local signal engine'})\n"
+                f"Source time : {moment.start:.1f}s - {moment.end:.1f}s\n"
+                f"Hook        : {moment.hook}\n"
+                f"Signals     : {moment.reason}\n"
+                f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
+                f"({decision.source}: {decision.reason})\n"
+                f"Source      : {source}\n\n"
+                f"Description : {moment.title} — full video on the channel.\n\n"
+                f"#shorts #viral #clip #{_slug(moment.title).replace('-', '')}\n"
+            )
+            (day_dir / (name + ".txt")).write_text(txt, encoding="utf-8")
+            (day_dir / (name + ".json")).write_text(
+                json.dumps({"moment": moment.__dict__, "render": render_info,
+                            "style": decision.as_dict(),
+                            "source": str(video), "made_with": "Viral Clip Make (100% free)"},
+                           indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            # A half-rendered clip is useless - delete it and its sidecars now.
+            cleanup.remove_clip_artifacts(out_path, ass_path, log)
+            raise
+        finally:
+            if ass_path and ass_path.exists():
+                try:
+                    ass_path.unlink()
+                except Exception:
+                    pass
 
         results.append({
             "name": name,

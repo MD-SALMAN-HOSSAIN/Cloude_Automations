@@ -104,10 +104,19 @@ downloads the speech model once.
 
 - **Optional AI / API** — by far the default is **Local (free - no key)**. If you want smarter
   moment picking and AI-written titles/hooks, choose a provider:
-  - **Gemini API** — get a free key at <https://aistudio.google.com/apikey>, model `gemini-3.5-flash-lite`
-    (fast and reliable). Just pasting a Google key (`AIza…` or `AQ.…`) automatically switches the
-    provider to Gemini. If Google retires or overloads a model, the app automatically tries other
-    available models and remembers the one that works — so an outdated model name never breaks it.
+  - **Anthropic / Claude API** — get a key at <https://console.anthropic.com/> (it starts with
+    `sk-ant-`). Choose **Anthropic / Claude API**, paste the key, and leave **Claude API URL** at
+    `https://api.anthropic.com/v1`. The default model is `claude-sonnet-5-5`; if that model is not
+    available on your account, the app tries a few other Claude models automatically and remembers
+    the one that works. Pasting an `sk-ant-…` key switches to Claude for you.
+  - **Gemini API** — get a free key at <https://aistudio.google.com/apikey>. The default model is
+    `gemini-3.5-flash-lite`: measured on this machine it answers the moment-picking prompt in about
+    **3 seconds**, while `gemini-3.8-flash` takes around **100 seconds** and can return an empty
+    answer, which makes a run look frozen. Keep the lite model for quick feedback. Just pasting a
+    Google key (`AIza…` or `AQ.…`) automatically switches the provider to Gemini. If a model is
+    retired, overloaded or returns an empty body, the app automatically tries the next fastest
+    available model and remembers the one that worked. Requests have a 30-second timeout, and if
+    every model fails the app continues with the free local picker instead of hanging.
   - **OpenAI-compatible** — works with local **Ollama** / **LM Studio** (`http://localhost:11434/v1`,
     model e.g. `llama3.1`), **OpenRouter** (`https://openrouter.ai/api/v1`), OpenAI, or any server
     that speaks the `/chat/completions` API.
@@ -129,7 +138,11 @@ downloads the speech model once.
   and Edge until one works — Firefox is the most reliable on Windows. Pick a specific browser if you
   know where you are signed in to YouTube, or point **cookies.txt** at a Netscape-format cookie file.
   Cookies are read locally and never uploaded. **Player client** is an advanced escape hatch if a
-  YouTube client change breaks downloads.
+  YouTube client change breaks downloads. The **Clean temp files now** button below deletes any
+  partial downloads, half-finished clips and dead caches on demand. The same cleanup runs
+  automatically the moment a download or render fails, and again every time the app starts — so an
+  interrupted run never leaves gigabytes of `.part` / `.temp.mp4` fragments behind. Finished clips
+  and healthy caches are always kept.
 - **Save settings** — the purple **Save settings** button at the bottom of this tab writes all of
   these choices (API key/provider/model, hardware, framing, aspect ratio and speed mode) to disk
   immediately, ready to be used during every future creation. You'll see a green "✓ Saved"

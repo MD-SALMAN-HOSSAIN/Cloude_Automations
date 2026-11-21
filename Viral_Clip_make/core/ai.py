@@ -9,17 +9,29 @@ from pathlib import Path
 from .moments import Moment
 from .util import Logger, clamp
 
-# Google retired gemini-2.5-flash for new API keys and the newest flash models
-# are often overloaded, so default to a fast, widely available one.
+# Measured on this machine (Nov 2026): 3.5-flash-lite answers the moment-picking
+# prompt in ~3 s, while 3.8-flash takes ~100 s and can return an empty body.
+# Fast and reliable is what makes the app feel like it is working.
 GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite"
+GEMINI_REQUEST_TIMEOUT = 30  # seconds - never let a slow model freeze a run
 
-# Tried in order if the configured model is unavailable (404/429/503).
+# Anthropic's current fast/cheap model for this kind of short structured task.
+CLAUDE_DEFAULT_MODEL = "claude-sonnet-5-5"
+CLAUDE_DEFAULT_BASE = "https://api.anthropic.com/v1"
+CLAUDE_FALLBACK_MODELS = [
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+]
+
+# Tried in order if the configured model is unavailable (404/429/503) or returns
+# an empty body. Fastest first; slow/unreliable models are last resorts only.
 GEMINI_FALLBACK_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.7-flash",
     "gemini-3.8-flash",
 ]
 
@@ -27,11 +39,17 @@ GEMINI_FALLBACK_MODELS = [
 def _retryable(exc: Exception) -> bool:
     text = str(exc).upper()
     return any(code in text for code in
-               ("404", "429", "503", "NOT_FOUND", "UNAVAILABLE", "RESOURCE_EXHAUSTED"))
+               ("404", "429", "503", "NOT_FOUND", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+                "EMPTY RESPONSE"))
 
 
-def _gemini_generate(client, cfg, contents, gen_cfg=None):
-    """Generate with automatic fallback to another available Gemini model."""
+def _gemini_generate(client, cfg, contents, gen_cfg=None, require_text=True):
+    """Generate with automatic fallback to another available Gemini model.
+
+    A response with no text is treated as a failure: some models answer with an
+    empty body after a very long delay, and remembering them as "working" is what
+    previously left installs stuck on a 100-second model.
+    """
     configured = str(cfg.get("ai.model", "") or "").strip()
     models = ([configured] if configured else []) + [
         m for m in GEMINI_FALLBACK_MODELS if m != configured
@@ -42,8 +60,10 @@ def _gemini_generate(client, cfg, contents, gen_cfg=None):
             response = client.models.generate_content(
                 model=name, contents=contents, config=gen_cfg
             )
+            if require_text and not (getattr(response, "text", "") or "").strip():
+                raise RuntimeError(f"{name} returned an empty response")
             if name != configured:
-                cfg.set("ai.model", name)  # remember the working model
+                cfg.set("ai.model", name)  # remember the fast model that worked
             return response
         except Exception as exc:
             if not _retryable(exc):
@@ -71,6 +91,8 @@ def ask_json(prompt: str, cfg):
     provider = str(cfg.get("ai.provider", "local") or "local").lower()
     if provider == "gemini":
         raw = _call_gemini(prompt, cfg)
+    elif provider == "claude":
+        raw = _call_claude(prompt, cfg)
     elif provider == "openai":
         raw = _call_openai_compatible(prompt, cfg)
     else:
@@ -78,13 +100,25 @@ def ask_json(prompt: str, cfg):
     return json.loads(_extract_json(raw))
 
 
-def _call_gemini(prompt: str, cfg) -> str:
+def _gemini_client(cfg):
     from google import genai
 
     key = str(cfg.get("ai.api_key", "") or "").strip()
     if not key:
         raise RuntimeError("Gemini API key is empty. Add it in the AI tab or choose Local mode.")
-    client = genai.Client(api_key=key)
+    # A hard request timeout keeps a stalled model from hanging the whole app.
+    try:
+        from google.genai import types
+        return genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(timeout=GEMINI_REQUEST_TIMEOUT * 1000),
+        )
+    except Exception:
+        return genai.Client(api_key=key)
+
+
+def _call_gemini(prompt: str, cfg) -> str:
+    client = _gemini_client(cfg)
     try:
         from google.genai import types
         gen_cfg = types.GenerateContentConfig(max_output_tokens=8192)
@@ -92,6 +126,66 @@ def _call_gemini(prompt: str, cfg) -> str:
         gen_cfg = None
     response = _gemini_generate(client, cfg, prompt, gen_cfg=gen_cfg)
     return response.text or ""
+
+
+def _claude_request(prompt: str, cfg, model: str, max_tokens: int) -> str:
+    """One request to Anthropic's Messages API. Returns the concatenated text."""
+    import requests
+
+    key = str(cfg.get("ai.api_key", "") or "").strip()
+    if not key:
+        raise RuntimeError("Claude API key is empty. Add it in the AI tab or choose Local mode.")
+    base = str(cfg.get("ai.claude_base_url", "") or CLAUDE_DEFAULT_BASE).strip().rstrip("/")
+    if not base:
+        base = CLAUDE_DEFAULT_BASE
+
+    response = requests.post(
+        base + "/messages",
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+        },
+        json={
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=240,
+    )
+    response.raise_for_status()
+    data = response.json()
+    blocks = data.get("content") or []
+    text = "".join(
+        str(block.get("text") or "")
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    if not text:
+        raise RuntimeError("Claude returned an empty response")
+    return text
+
+
+def _claude_generate(prompt: str, cfg, max_tokens: int) -> str:
+    """Try the configured Claude model, then a few widely available fallbacks."""
+    configured = str(cfg.get("ai.model", "") or "").strip() or CLAUDE_DEFAULT_MODEL
+    models = [configured] + [m for m in CLAUDE_FALLBACK_MODELS if m != configured]
+    last = None
+    for name in models:
+        try:
+            text = _claude_request(prompt, cfg, name, max_tokens)
+            if name != configured:
+                cfg.set("ai.model", name)  # remember the model that actually works
+            return text
+        except Exception as exc:
+            if not _retryable(exc):
+                raise  # bad key / permission errors must not be hidden
+            last = exc
+    raise last
+
+
+def _call_claude(prompt: str, cfg) -> str:
+    return _claude_generate(prompt, cfg, max_tokens=8192)
 
 
 def _call_openai_compatible(prompt: str, cfg) -> str:
@@ -177,6 +271,8 @@ def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger) -> 
         prompt = _build_prompt(transcript, cfg)
         if provider == "gemini":
             raw = _call_gemini(prompt, cfg)
+        elif provider == "claude":
+            raw = _call_claude(prompt, cfg)
         elif provider == "openai":
             raw = _call_openai_compatible(prompt, cfg)
         else:
@@ -232,7 +328,9 @@ def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger) -> 
             kept.append(moment)
             if len(kept) >= int(cfg.get("general.clips_per_video", 5)):
                 break
-        kept.sort(key=lambda m: m.start)
+        # Lead with the highest-scoring moment so the first exported clip is
+        # the one with the best chance of taking off.
+        kept.sort(key=lambda m: m.score, reverse=True)
         log.ok("AI selected %d moments", len(kept))
         return kept
     except Exception as exc:
@@ -272,9 +370,7 @@ def test_connection(cfg, log: Logger | None = None) -> dict:
         if not key:
             return result(False, "No API key entered - add your Gemini key above")
         try:
-            from google import genai
-
-            client = genai.Client(api_key=key)
+            client = _gemini_client(cfg)
             try:
                 from google.genai import types
                 gen_cfg = types.GenerateContentConfig(max_output_tokens=16)
@@ -285,6 +381,18 @@ def test_connection(cfg, log: Logger | None = None) -> dict:
             return result(True, f"Connected - {working} responded")
         except Exception as exc:
             return result(False, f"Gemini: {err(exc)}")
+
+    if provider == "claude":
+        key = str(cfg.get("ai.api_key", "") or "").strip()
+        if not key:
+            return result(False, "No API key entered - add your Claude key above")
+        check_model = model or CLAUDE_DEFAULT_MODEL
+        try:
+            text = _claude_generate("Reply with OK", cfg, max_tokens=16)
+            working = str(cfg.get("ai.model", "") or check_model)
+            return result(True, f"Connected - {working} responded: {text[:40]}")
+        except Exception as exc:
+            return result(False, f"Claude: {err(exc)}")
 
     if provider == "openai":
         base = str(cfg.get("ai.base_url", "") or "").strip().rstrip("/")

@@ -3,13 +3,15 @@ from __future__ import annotations
 import os
 import queue
 import threading
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from core.ai import GEMINI_DEFAULT_MODEL
-from core.config import Config
+from core import cleanup
+from core.ai import CLAUDE_DEFAULT_BASE, CLAUDE_DEFAULT_MODEL, GEMINI_DEFAULT_MODEL
+from core.config import Config, app_data_dir
 from core.pipeline import run_pipeline
 from core.util import Logger
 
@@ -42,6 +44,7 @@ def _init_fonts():
 
 PROVIDERS = {
     "Local (free - no key)": "local",
+    "Anthropic / Claude API": "claude",
     "Gemini API": "gemini",
     "OpenAI / Ollama / OpenRouter": "openai",
 }
@@ -120,7 +123,18 @@ class App:
         self.result = None
         _init_fonts()
         self._build()
+        self._cleanup_startup()
         self._fade_in()
+
+    def _cleanup_startup(self):
+        """Remove leftovers from a run that was closed or crashed mid-way."""
+        try:
+            freed = cleanup.purge_all(self.cfg)
+            if freed > 0:
+                self._log("INFO",
+                          f"Auto-clean removed {freed / 1e6:.1f} MB of old temp/partial files")
+        except Exception as exc:
+            self._log("WARN", f"Startup cleanup skipped: {exc}")
 
     # ------------------------------------------------------------------
     def _fade_in(self, alpha: float = 0.0):
@@ -350,23 +364,43 @@ class App:
 
         self.key_var = ctk.StringVar(value=str(self.cfg.get("ai.api_key", "") or ""))
         self.base_var = ctk.StringVar(value=str(self.cfg.get("ai.base_url", "")))
+        self.claude_url_var = ctk.StringVar(value=str(
+            self.cfg.get("ai.claude_base_url", CLAUDE_DEFAULT_BASE) or CLAUDE_DEFAULT_BASE))
         self.ai_model_var = ctk.StringVar(value=str(self.cfg.get("ai.model", "")))
 
-        pairs = [
-            ("API key", self.key_var, "Paste your key (stored only on this PC)"),
-            ("Base URL", self.base_var, "http://localhost:11434/v1"),
-            ("Model", self.ai_model_var, "gemini-2.5-flash / llama3.1"),
-        ]
-        for label, var, placeholder in pairs:
-            ctk.CTkLabel(ai, text=label, font=FONT_SMALL, text_color=MUTED).pack(anchor="w", padx=18, pady=(0, 2))
-            show = "•" if label == "API key" else ""
-            ctk.CTkEntry(ai, textvariable=var, height=40, corner_radius=10,
-                         placeholder_text=placeholder, font=FONT,
-                         show=show).pack(fill="x", padx=18, pady=(0, 10))
+        self.key_label = ctk.CTkLabel(ai, text="API key", font=FONT_SMALL, text_color=MUTED)
+        self.key_label.pack(anchor="w", padx=18, pady=(0, 2))
+        ctk.CTkEntry(ai, textvariable=self.key_var, height=40, corner_radius=10,
+                     placeholder_text="Paste your key (stored only on this PC)",
+                     font=FONT, show="•").pack(fill="x", padx=18, pady=(0, 10))
+
+        self.base_row = ctk.CTkFrame(ai, fg_color="transparent")
+        ctk.CTkLabel(self.base_row, text="Base URL (OpenAI / Ollama / OpenRouter)",
+                     font=FONT_SMALL, text_color=MUTED).pack(anchor="w")
+        ctk.CTkEntry(self.base_row, textvariable=self.base_var, height=40,
+                     corner_radius=10, placeholder_text="http://localhost:11434/v1",
+                     font=FONT).pack(fill="x", pady=(2, 0))
+        self.base_row.pack(fill="x", padx=18, pady=(0, 10))
+
+        self.claude_row = ctk.CTkFrame(ai, fg_color="transparent")
+        ctk.CTkLabel(self.claude_row, text="Claude API URL",
+                     font=FONT_SMALL, text_color=MUTED).pack(anchor="w")
+        ctk.CTkEntry(self.claude_row, textvariable=self.claude_url_var, height=40,
+                     corner_radius=10, placeholder_text=CLAUDE_DEFAULT_BASE,
+                     font=FONT).pack(fill="x", pady=(2, 0))
+        # Packed only when the Claude provider is selected (see _on_provider).
+
+        self.model_label = ctk.CTkLabel(ai, text="Model", font=FONT_SMALL, text_color=MUTED)
+        self.model_label.pack(anchor="w", padx=18, pady=(0, 2))
+        ctk.CTkEntry(ai, textvariable=self.ai_model_var, height=40, corner_radius=10,
+                     placeholder_text="claude-sonnet-5-5 / gemini-3.5-flash-lite / llama3.1",
+                     font=FONT).pack(fill="x", padx=18, pady=(0, 10))
 
         ctk.CTkLabel(ai, text=(
-            "Gemini: use a free key from aistudio.google.com  ·  Ollama / LM Studio: use the local URL above  ·  "
-            "OpenRouter: https://openrouter.ai/api/v1. If an API fails, the app falls back to free local scoring."
+            "Claude: paste a key from console.anthropic.com (starts with sk-ant-) and leave the "
+            "Claude URL at its default.  ·  Gemini: free key from aistudio.google.com.  ·  "
+            "OpenAI / Ollama / OpenRouter: use the Base URL above. If an API fails, the app falls "
+            "back to free local scoring."
         ), font=FONT_SMALL, text_color=MUTED, wraplength=880,
             justify="left").pack(anchor="w", padx=18, pady=(2, 10))
 
@@ -385,8 +419,11 @@ class App:
         )
         self.conn_btn.pack(side="right", padx=10, pady=8)
 
-        for var in (self.key_var, self.base_var, self.ai_model_var):
-            var.trace_add("write", lambda *_: self._on_ai_field_change())
+        # Only pasting/editing the KEY may auto-switch the provider. Editing the
+        # model or URL must never undo a provider the user chose by hand.
+        self.key_var.trace_add("write", lambda *_: self._on_ai_field_change())
+        for var in (self.base_var, self.claude_url_var, self.ai_model_var):
+            var.trace_add("write", lambda *_: self._reset_connection())
         ai.pack(fill="x", pady=(0, 12))
 
         yt = self._card(scroll, "YOUTUBE DOWNLOAD — ONLY NEEDED IF YOUTUBE BLOCKS YOU")
@@ -424,6 +461,15 @@ class App:
             "If you see \"Sign in to confirm you're not a bot\", choose the browser where you are "
             "signed in to YouTube (Firefox works best on Windows). Auto tries Firefox, Chrome and "
             "Edge for you. Cookies are read locally and never uploaded. A cookies.txt file works too."
+        ), font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left").pack(
+            anchor="w", padx=18, pady=(0, 10))
+        ctk.CTkButton(yt, text="Clean temp files now", height=34, corner_radius=10,
+                      fg_color=CARD2, hover_color="#2c3344", text_color=TEXT,
+                      font=FONT_SMALL, command=self.clean_temp_clicked).pack(
+            anchor="w", padx=18, pady=(0, 4))
+        ctk.CTkLabel(yt, text=(
+            "Partial downloads, unfinished clips and dead caches are deleted automatically when a "
+            "run fails and every time the app starts. Finished videos and healthy caches are kept."
         ), font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left").pack(
             anchor="w", padx=18, pady=(0, 14))
         yt.pack(fill="x", pady=(0, 12))
@@ -608,15 +654,31 @@ class App:
 
     def _on_provider(self, _value=None):
         provider = PROVIDERS.get(self.provider_var.get(), "local")
-        if provider == "gemini":
+        self.key_label.configure(text="Claude API key" if provider == "claude" else "API key")
+
+        # Only show the URL field that is relevant to the chosen provider.
+        self.base_row.pack_forget()
+        self.claude_row.pack_forget()
+        if provider == "claude":
+            self.claude_row.pack(fill="x", padx=18, pady=(0, 10), before=self.model_label)
+        else:
+            self.base_row.pack(fill="x", padx=18, pady=(0, 10), before=self.model_label)
+
+        if provider == "claude":
+            if not self.claude_url_var.get().strip():
+                self.claude_url_var.set(CLAUDE_DEFAULT_BASE)
             current = self.ai_model_var.get().strip()
-            if not current or current.startswith(("llama", "gpt", "openai/", "mistral")):
+            if not current or current.startswith(("gemini-", "llama", "gpt-", "openai/", "mistral")):
+                self.ai_model_var.set(CLAUDE_DEFAULT_MODEL)
+        elif provider == "gemini":
+            current = self.ai_model_var.get().strip()
+            if not current or current.startswith(("claude-", "llama", "gpt", "openai/", "mistral")):
                 self.ai_model_var.set(GEMINI_DEFAULT_MODEL)
         elif provider == "openai":
             if not self.base_var.get() or "localhost" in self.base_var.get():
                 if not self.base_var.get():
                     self.base_var.set("http://localhost:11434/v1")
-            if not self.ai_model_var.get() or self.ai_model_var.get().startswith("gemini"):
+            if not self.ai_model_var.get() or self.ai_model_var.get().startswith(("gemini", "claude-")):
                 self.ai_model_var.set("llama3.1")
 
     def _on_aspect(self, _value=None):
@@ -657,6 +719,10 @@ class App:
             if self.provider_var.get() != "Gemini API":
                 self.provider_var.set("Gemini API")
                 self._on_provider()
+        elif key.startswith("sk-ant-"):
+            if self.provider_var.get() != "Anthropic / Claude API":
+                self.provider_var.set("Anthropic / Claude API")
+                self._on_provider()
         elif key.startswith(("sk-", "sk_")):
             if self.provider_var.get() != "OpenAI / Ollama / OpenRouter":
                 self.provider_var.set("OpenAI / Ollama / OpenRouter")
@@ -686,6 +752,16 @@ class App:
     def _log(self, level, message):
         self.logbox.insert("end", f"[{level}] {message}\n", level)
         self.logbox.see("end")
+        # Keep a small disk log so a failed run can be diagnosed after the app
+        # is closed (the on-screen box disappears with the window).
+        try:
+            path = app_data_dir() / "run.log"
+            if path.exists() and path.stat().st_size > 512_000:
+                path.write_text("", encoding="utf-8")
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} [{level}] {message}\n")
+        except Exception:
+            pass
 
     def browse_file(self):
         path = filedialog.askopenfilename(
@@ -702,6 +778,17 @@ class App:
         )
         if path:
             self.yt_cookie_var.set(path)
+
+    def clean_temp_clicked(self):
+        try:
+            freed = cleanup.purge_all(self.cfg, log=Logger(lambda lvl, msg: self._log(lvl, msg)))
+            messagebox.showinfo(
+                "Cleanup done",
+                f"Removed {freed / 1e6:.1f} MB of partial downloads, unfinished clips "
+                "and stale cache files.\nFinished clips were not touched.",
+            )
+        except Exception as exc:
+            messagebox.showerror("Cleanup failed", str(exc)[:400])
 
     def paste_link(self):
         try:
@@ -745,6 +832,7 @@ class App:
             "ai.provider": PROVIDERS.get(self.provider_var.get(), "local"),
             "ai.api_key": self.key_var.get().strip(),
             "ai.base_url": self.base_var.get().strip(),
+            "ai.claude_base_url": self.claude_url_var.get().strip() or CLAUDE_DEFAULT_BASE,
             "ai.model": self.ai_model_var.get().strip(),
             "download.cookies_from_browser": BROWSER_LABELS.get(self.yt_browser_var.get(), "auto"),
             "download.cookies_file": self.yt_cookie_var.get().strip(),
@@ -801,7 +889,19 @@ class App:
         try:
             self.q.put(("done", run_pipeline(source, self.cfg, log, progress)))
         except Exception as exc:
-            self.q.put(("error", str(exc)))
+            import traceback
+            detail = " ".join(str(exc).split()) or exc.__class__.__name__
+            self.q.put(("log", "ERROR", f"{detail}\n{traceback.format_exc()}"))
+            # The moment a run fails, delete its partial download, unfinished
+            # clip files and any cache that no longer has a source video.
+            try:
+                freed = cleanup.purge_failed_run(self.cfg, log=log)
+                if freed:
+                    self.q.put(("log", "INFO",
+                                f"Auto-clean removed {freed / 1e6:.1f} MB of failed-run temp files"))
+            except Exception as clean_exc:
+                self.q.put(("log", "WARN", f"Cleanup failed: {clean_exc}"))
+            self.q.put(("error", detail))
 
     def _poll(self):
         try:

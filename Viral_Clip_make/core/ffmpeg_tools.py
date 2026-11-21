@@ -384,6 +384,10 @@ def render_clip(req: RenderRequest, log=None) -> dict:
             if log:
                 log.warn("Hardware encoder %s failed - retrying on CPU: %s", enc, tail[-180:])
             continue
+        try:
+            filter_file.unlink(missing_ok=True)
+        except Exception:
+            pass
         raise RuntimeError(f"FFmpeg render failed:\n{tail}")
 
     if log:

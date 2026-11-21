@@ -6,6 +6,7 @@ import re
 import time
 from pathlib import Path
 
+from . import cleanup
 from .util import Logger
 
 _URL_RE = re.compile(r"^https?://", re.I)
@@ -70,6 +71,9 @@ def fetch(source: str, cfg, log: Logger, progress=None) -> Path:
     height = int(cfg.get("general.download_height", 720) or 720)
     out_dir = cfg.downloads_dir
     key = _cache_key(source, height)
+    # A previous interrupted run may have left gigabytes of yt-dlp fragments.
+    # Remove them before doing anything else so retries start clean.
+    cleanup.purge_download_temp(cfg, log, key=key)
 
     cached = _cached_file(out_dir, key)
     if cached:
@@ -182,6 +186,8 @@ def fetch(source: str, cfg, log: Logger, progress=None) -> Path:
             if not result:
                 raise RuntimeError("Download finished but no video file was produced.")
         except Exception as exc:  # noqa - reported to the user with context below
+            # Delete half-downloaded fragments immediately, before any retry.
+            cleanup.purge_download_temp(cfg, log, key=key)
             return exc
         return None
 
@@ -196,6 +202,7 @@ def fetch(source: str, cfg, log: Logger, progress=None) -> Path:
         error = run_attempt(opts)
         if error is None:
             result = _cached_file(out_dir, key)
+            cleanup.purge_download_temp(cfg, log, key=key)  # no stray fragments after success
             log.ok("Downloaded: %s (%.1f MB)", result.name, result.stat().st_size / 1e6)
             return result.resolve()
 
@@ -229,6 +236,7 @@ def fetch(source: str, cfg, log: Logger, progress=None) -> Path:
                 error = run_attempt(opts)
                 if error is None:
                     result = _cached_file(out_dir, key)
+                    cleanup.purge_download_temp(cfg, log, key=key)
                     log.ok("Downloaded: %s (%.1f MB)", result.name, result.stat().st_size / 1e6)
                     return result.resolve()
                 last_error = error

@@ -64,6 +64,7 @@ def default_settings() -> dict:
         "ai.provider": "local",          # local | gemini | openai
         "ai.api_key": "",
         "ai.base_url": "http://localhost:11434/v1",
+        "ai.claude_base_url": "https://api.anthropic.com/v1",
         "ai.model": "gemini-3.5-flash-lite",
         # Output / quality
         "quality.mode": "balanced",      # fast | balanced | best
