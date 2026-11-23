@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from .moments import Moment
+from .moments import Moment, score_window, spoiler_source, window_limits
 from .util import Logger, clamp
 
 # Measured on this machine (Nov 2026): 3.5-flash-lite answers the moment-picking
@@ -218,8 +218,7 @@ def _call_openai_compatible(prompt: str, cfg) -> str:
 
 def _build_prompt(transcript: dict, cfg) -> str:
     duration = float(transcript.get("duration") or 0)
-    min_len = float(cfg.get("general.min_seconds", 12))
-    max_len = float(cfg.get("general.max_seconds", 45))
+    min_len, max_len = window_limits(cfg)
     wanted = int(cfg.get("general.clips_per_video", 5))
 
     segments = transcript.get("segments") or []
@@ -233,35 +232,123 @@ def _build_prompt(transcript: dict, cfg) -> str:
         used += len(line)
     transcript_text = "\n".join(lines) or transcript.get("text", "")
 
-    return f"""You are a viral short-form video editor. Pick the {wanted} most engaging moments
-from the transcript below and write metadata for each one.
+    return f"""You are a viral short-form video editor. Pick UP TO {wanted} moments from the
+transcript below that a stranger would watch to the end and send to a friend.
+Return FEWER, even ZERO, if fewer qualify. Never pad the list to reach {wanted}.
 
-Video duration: {duration:.1f} seconds.
-Each moment MUST be {min_len:.0f}-{max_len:.0f} seconds long, start and end on complete
-sentences where possible, and stay inside 0 to {duration:.1f} seconds.
-Prefer moments with a strong hook, emotion, surprise, a question or a clear payoff.
-The title must be <=70 characters. The hook must be <=8 words, ALL CAPS, and punchy.
-The reason must be a short phrase (max 6 words). The score is 0-100 (higher = more viral).
+Video duration: {duration:.1f} seconds. Each moment must be {min_len:.0f}-{max_len:.0f} seconds,
+inside 0 to {duration:.1f}, start and end on complete sentences, and use the SHORTEST
+window that tells the whole story (do not stretch to the maximum).
+
+A moment qualifies ONLY if ALL of these are true:
+1. PREMISE: in the first few seconds a stranger can name a concrete person, object,
+   place, number or thing that is said or visible BEFORE the exciting beat.
+   Shouting or a reaction with no named thing is not a moment.
+2. PAYOFF: the interesting outcome or reaction is SEEN or HEARD in the LAST 40% of
+   the window and the clip ends right on it - not on the setup, a logo or a question
+   repeated ten seconds earlier. Reveal it; never tease it.
+3. PICTURE FIRST: second 1 shows the thing or a face changing, not a menu, loading
+   screen, someone settling in or a title card.
+4. STANDS ALONE: no pronoun with no antecedent, no answer without its question, no
+   opening with "and / but / so". A cold viewer understands it without context.
+5. ONE POINT: every moment is a different event - never two clips about the same beat.
+
+HARD REJECT - do not return any of these:
+- Spoilers or leaks: story endings, "X endings", final mission / finale, a character's
+  sacrifice or death, epilogues, "two years later", chapter-by-chapter recaps,
+  "the director said", interviews, quotes, lore/plot explanations, cutscene retellings.
+- Straight-faced description, backstory, opinions, scenery or a calm list of facts.
+- A narrator explaining what happened instead of the viewer seeing/hearing it happen.
+- A moment whose hook promises something the window never actually shows.
+
+For each moment answer these honestly as true/false: premise (a named thing comes
+first), payoff_in_last_40pct, picture_first, visual_payoff (the payoff is seen or
+heard, not only narrated), standalone, spoiler.
+
+Score each rubric item 0-10 using the FULL range: premise, payoff, hook, picture,
+standalone, safety. A spoiler or a moment without a visible payoff scores near 0.
+
+Metadata: title <=70 chars, starting with the named subject; hook <=6 words, ALL CAPS,
+saying only what the clip shows; reason max 6 words.
 
 Return ONLY a JSON array, no markdown and no explanation, in this exact shape:
-[{{"start":12.5,"end":34.0,"title":"...","hook":"...","reason":"...","score":88}}]
+[{{"start":12.5,"end":34.0,"title":"...","hook":"...","reason":"...",
+  "premise":true,"payoff_in_last_40pct":true,"picture_first":true,
+  "visual_payoff":true,"standalone":true,"spoiler":false,
+  "scores":{{"premise":8,"payoff":9,"hook":8,"picture":7,"standalone":9,"safety":10}}}}]
 
 TRANSCRIPT:
 {transcript_text}
 """
 
 
-def _snap(value: float, segments: list[dict], tolerance: float = 2.0) -> float:
+def _snap(value: float, segments: list[dict], tolerance: float = 2.0,
+          edge: str = "start") -> float:
+    """Snap to a sentence edge. Ends must snap to segment ends, not starts:
+    snapping an end to the next segment's start can cut off the payoff."""
     if not segments:
         return value
-    nearest = min(segments, key=lambda s: abs(float(s["start"]) - value))
-    if abs(float(nearest["start"]) - value) <= tolerance:
-        return float(nearest["start"])
+    key = "start" if edge == "start" else "end"
+
+    def edge_of(seg):
+        return float(seg.get(key, seg.get("start", 0)))
+
+    nearest = min(segments, key=lambda s: abs(edge_of(s) - value))
+    point = edge_of(nearest)
+    if abs(point - value) <= tolerance:
+        return point
     return value
 
 
-def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger) -> list[Moment] | None:
-    """Return AI-picked moments, or None to keep the local free picks."""
+_RUBRIC_WEIGHTS = {
+    "premise": 0.24, "payoff": 0.26, "hook": 0.20,
+    "picture": 0.16, "standalone": 0.08, "safety": 0.06,
+}
+_POINT_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "so", "is", "are", "was", "were", "this",
+    "that", "it", "in", "on", "at", "to", "of", "for", "with", "has", "have", "gets",
+}
+
+
+def _rubric_score(item: dict) -> float:
+    """Use the AI's sub-scores when present; cap the old single score."""
+    scores = item.get("scores")
+    if isinstance(scores, dict) and scores:
+        total = 0.0
+        for key, weight in _RUBRIC_WEIGHTS.items():
+            try:
+                value = clamp(float(scores.get(key, 6)), 0, 10)
+            except (TypeError, ValueError):
+                value = 6.0
+            total += value * weight
+        return round(total * 10, 1)
+    try:
+        # A bare "score" from a model is not calibrated: keep it from
+        # crowding out the measured signals in the blend below.
+        return clamp(float(item.get("score", 75)), 0, 95)
+    except (TypeError, ValueError):
+        return 75.0
+
+
+def _same_point(a: Moment, b: Moment) -> bool:
+    def keys(text):
+        return {w for w in re.findall(r"[a-z']+", text.lower())
+                if len(w) > 2 and w not in _POINT_STOPWORDS}
+
+    ka = keys(a.title + " " + a.hook)
+    kb = keys(b.title + " " + b.hook)
+    if not ka or not kb:
+        return False
+    return len(ka & kb) / max(1, min(len(ka), len(kb))) >= 0.6
+
+
+def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger,
+                    rms: list[float] | None = None) -> list[Moment] | None:
+    """Return gated, blended AI picks; None means the API failed (use local picks).
+
+    An empty list is different: the AI answered but nothing passed the viral
+    quality gate, so the caller should stop instead of rendering weak clips.
+    """
     provider = str(cfg.get("ai.provider", "local") or "local").lower()
     if provider == "local":
         return None
@@ -283,38 +370,73 @@ def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger) -> 
             raise RuntimeError("AI response was not a list of moments")
 
         duration = float(transcript.get("duration") or 0)
-        min_len = float(cfg.get("general.min_seconds", 12))
-        max_len = float(cfg.get("general.max_seconds", 45))
+        min_len, max_len = window_limits(cfg, log)
+        is_spoiler, terms = spoiler_source(transcript)
+        if is_spoiler:
+            log.warn(
+                "Source is a spoiler/recap explainer (%s) - refusing to cut leaked "
+                "ending footage into Shorts; use gameplay with visible reactions.",
+                ", ".join(f"{k} x{v}" for k, v in list(terms.items())[:5]),
+            )
+            return []
         segments = transcript.get("segments") or []
-        words = transcript.get("words") or []
+        weight = clamp(float(cfg.get("moments.ai_weight", 0.6)), 0, 1)
+        rejected: dict[str, int] = {}
 
         picked: list[Moment] = []
         for item in data:
+            if not isinstance(item, dict):
+                continue
             try:
                 start = float(item["start"])
                 end = float(item["end"])
             except (KeyError, TypeError, ValueError):
                 continue
-            start = _snap(clamp(start, 0, max(0, duration - min_len)), segments)
-            end = _snap(clamp(end, start + min_len, min(duration, start + max_len)), segments)
-            if end <= start:
-                end = min(duration, start + min_len)
-            if end - start < min_len or end > duration + 0.5:
+            start = _snap(clamp(start, 0, max(0, duration - min_len)), segments, edge="start")
+            end = _snap(clamp(end, start + min_len, min(duration, start + max_len)),
+                        segments, edge="end")
+            end = clamp(end, start + min_len, min(duration, start + max_len + 0.5))
+            if end - start < min_len - 0.25 or end > duration + 0.5:
+                rejected["bad window"] = rejected.get("bad window", 0) + 1
                 continue
-            count = sum(1 for w in words if start <= float(w["start"]) < end)
+
+            title = str(item.get("title") or "Viral moment").strip()[:70]
+            hook = str(item.get("hook") or "WATCH THIS").strip().upper()[:60]
+            reason = str(item.get("reason") or "AI selection").strip()[:80]
+            ai_flags = {
+                key: item.get(key) for key in (
+                    "spoiler", "premise", "payoff_in_last_40pct",
+                    "picture_first", "visual_payoff", "standalone",
+                )
+            }
+            measured, flags, sig = score_window(
+                transcript, rms or [], start, end, cfg, duration,
+                title, hook, reason, ai_flags,
+            )
+            if flags["failed"]:
+                for failure in flags["failed"]:
+                    rejected[failure] = rejected.get(failure, 0) + 1
+                log.warn("Rejected AI pick at %.1fs: %s", start, ", ".join(flags["failed"]))
+                continue
+
+            final = round(weight * _rubric_score(item) + (1 - weight) * measured, 1)
+            signals = ", ".join(sig["signals"]) or "premise + payoff"
             picked.append(Moment(
-                start=round(start, 2), end=round(end, 2),
-                score=round(clamp(float(item.get("score", 75)), 0, 100), 1),
-                title=str(item.get("title") or "Viral moment").strip()[:70],
-                hook=str(item.get("hook") or "WATCH THIS").strip().upper()[:60],
-                reason=str(item.get("reason") or "AI selection").strip()[:80],
-                words=count,
+                start=round(start, 2), end=round(end, 2), score=final,
+                title=title, hook=hook,
+                reason=f"{reason} ({signals})"[:120],
+                words=len(sig["words"]),
             ))
 
         if not picked:
-            raise RuntimeError("AI returned no usable moments")
+            log.warn(
+                "No AI pick passed the viral-quality gate (%s). The source may be a "
+                "spoiler/recap or narration-only video; try gameplay with visible reactions.",
+                ", ".join(f"{k} x{v}" for k, v in rejected.items()) or "no candidates",
+            )
+            return []
 
-        # Remove overlapping picks and cap to the requested count.
+        # Remove overlapping picks and near-duplicate points, cap to the count.
         picked.sort(key=lambda m: m.score, reverse=True)
         kept: list[Moment] = []
         for moment in picked:
@@ -325,13 +447,20 @@ def enhance_moments(transcript: dict, local: list[Moment], cfg, log: Logger) -> 
                 for other in kept
             ):
                 continue
+            if any(_same_point(moment, other) for other in kept):
+                continue
             kept.append(moment)
             if len(kept) >= int(cfg.get("general.clips_per_video", 5)):
                 break
+
         # Lead with the highest-scoring moment so the first exported clip is
         # the one with the best chance of taking off.
         kept.sort(key=lambda m: m.score, reverse=True)
-        log.ok("AI selected %d moments", len(kept))
+        if rejected:
+            log.info("Quality gate rejected: %s",
+                     ", ".join(f"{k} x{v}" for k, v in rejected.items()))
+        log.ok("AI selected %d moments (top blended score %.1f/100)",
+               len(kept), kept[0].score if kept else 0)
         return kept
     except Exception as exc:
         log.warn("AI selection failed (%s) - falling back to free local scoring", exc)

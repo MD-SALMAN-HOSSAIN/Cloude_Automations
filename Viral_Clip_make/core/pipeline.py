@@ -89,12 +89,17 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         _report(progress, 46, f"AI ({provider}) is choosing the strongest moments...")
     rms = rms_curve(audio)
     moments = find_moments(transcript, rms, cfg, log)
-    ai_moments = ai.enhance_moments(transcript, moments, cfg, log)
-    if ai_moments:
+    ai_moments = ai.enhance_moments(transcript, moments, cfg, log, rms=rms)
+    # None = API failed (local picks stand). [] = the picker answered but no
+    # moment passed the viral-quality gate: rendering the leftovers wastes an
+    # hour and produces clips nobody watches.
+    if ai_moments is not None:
         moments = ai_moments
     if not moments:
         raise RuntimeError(
-            "No suitable moments were found. Try a video with speech and more energy."
+            "No moment passed the viral-quality gate. A spoiler/recap, interview or "
+            "narration-only video has no visible payoff for a cold viewer. "
+            "Try gameplay with a named subject and a reaction you can see."
         )
 
     # 5. Framing / subject tracking -----------------------------------------
