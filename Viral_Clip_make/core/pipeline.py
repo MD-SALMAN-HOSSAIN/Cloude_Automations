@@ -102,49 +102,47 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             "Try gameplay with a named subject and a reaction you can see."
         )
 
-    # 5. Framing / subject tracking -----------------------------------------
-    framing = str(cfg.get("video.framing", "auto") or "auto").strip().lower()
-    if framing not in ("auto", "fit_blur", "fit_black", "track"):
-        framing = "auto"
+    # 5. Game-subject framing -----------------------------------------------
     track = None
     crop_w = crop_h = 0
     facecam_on = bool(cfg.get("features.facecam_pip", False))
     facecam = None
-    # Auto mode measures the subject so the AI / heuristic can choose a style.
-    # Turning face tracking off is still respected: auto then prefers whole frame.
-    need_track = (facecam_on or (bool(cfg.get("features.face_track", True))
-                                 and framing in ("auto", "track")))
-    if need_track:
-        _report(progress, 53, "Tracking the subject for smart framing...")
-        cache = cfg.cache_dir / (video.stem + ".track.json")
-        track = faces.analyse_video(
-            video, cfg, log, cache_path=cache,
-            sample_interval=float(cfg.get("speed.face_interval", 0.5)),
-            max_seconds=analysis_seconds,
-        )
-    elif framing == "track":
-        log.info("Face tracking off - using centre crop")
-    elif framing == "auto":
-        log.info("Face tracking off - auto style will prefer the whole frame")
+    webcam_rect = None
+    # The game character is the main subject no matter what. Tracking can never
+    # be switched off by a stale setting: without a track there is no crop, and
+    # without a crop the character disappears into the whole-frame background.
+    log.info("Game-subject lock: tracking the character for every clip")
+    _report(progress, 53, "Tracking the game character for smart framing...")
+    cache = cfg.cache_dir / (video.stem + ".track.json")
+    track = faces.analyse_video(
+        video, cfg, log, cache_path=cache,
+        sample_interval=float(cfg.get("speed.face_interval", 0.5)),
+        max_seconds=analysis_seconds,
+    )
+    corner = str(cfg.get("video.facecam_corner", "auto") or "auto").lower()
+    webcam_rect = faces.find_facecam(track, corner=corner) if track else None
     if facecam_on:
-        corner = str(cfg.get("video.facecam_corner", "auto") or "auto").lower()
-        facecam = faces.find_facecam(track, corner=corner) if track else None
-        if facecam:
-            log.ok("Facecam found in the %s corner - webcam goes in a circle, subject stays centred",
+        if webcam_rect:
+            facecam = webcam_rect
+            log.ok("Facecam found in the %s corner - webcam goes in a circle, character stays centred",
                    facecam["corner"])
         else:
             log.warn("Facecam option is on but no corner webcam was detected - using normal framing")
+    elif webcam_rect:
+        log.info("Webcam bubble detected - excluded from the crop so the character stays dominant")
 
-    if framing in ("track", "auto") or facecam:
-        crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
-    else:
-        log.info("Framing: whole video visible in %s (no content cut, no face lock)",
-                 "a blurred vertical canvas" if framing == "fit_blur" else "black bars")
+    # Always crop: the character fills the vertical frame instead of sharing it
+    # with the minimap, HUD and scrolling background.
+    crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
+    subject_track = track or {
+        "width": info.width, "height": info.height,
+        "samples": [], "sample_interval": 0.5,
+    }
 
     if provider != "local" and bool(cfg.get("ai.auto_style", True)):
-        _report(progress, 58, f"AI ({provider}) is choosing the best framing per clip...")
+        _report(progress, 58, f"AI ({provider}) is locating the character in each clip...")
     decisions = style.choose_styles(moments, track, cfg, log, info=info,
-                                    ignore_rect=facecam)
+                                    ignore_rect=webcam_rect)
 
     # 6. Render each clip ----------------------------------------------------
     out_root = Path(str(cfg.get("general.output_dir")))
@@ -182,17 +180,18 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             ass_path = None
 
         decision = decisions[index - 1]
-        clip_framing = decision.framing
+        # style.choose_styles already guarantees this; keep the hard lock here
+        # too so a future edit cannot silently reintroduce whole-frame clips.
+        clip_framing = "track"
         focus_x, focus_y = decision.focus_x, decision.focus_y
         if facecam:
-            # The webcam is an inset now: the real subject owns the centre.
-            clip_framing = "track"
+            # The webcam is an inset now: the game character owns the centre.
             focus_x, focus_y = 0.5, 0.45
         crop_x = crop_y = None
-        if track and crop_w and clip_framing == "track":
+        if crop_w and crop_h:
             path = faces.build_path(
-                track, moment.start, moment.end, crop_w, crop_h, cfg,
-                focus_x=focus_x, focus_y=focus_y, ignore_rect=facecam,
+                subject_track, moment.start, moment.end, crop_w, crop_h, cfg,
+                focus_x=focus_x, focus_y=focus_y, ignore_rect=webcam_rect,
             )
             crop_x, crop_y = path["x"], path["y"]
 
@@ -217,6 +216,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                 f"Signals     : {moment.reason}\n"
                 f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
                 f"({decision.source}: {decision.reason})\n"
+                f"Main subject: {decision.subject} (locked, {decision.locked})\n"
                 + (f"Layout      : facecam bubble in top {facecam['corner']} corner, "
                    f"subject centred\n" if facecam else "")
                 + f"Source      : {source}\n\n"

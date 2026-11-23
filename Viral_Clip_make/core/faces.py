@@ -55,6 +55,61 @@ class Sample:
     motion_x: float | None = None
     motion_y: float | None = None
     motion_conf: float = 0.0
+    # The inferred game character / centre-of-action. This is what the crop
+    # follows, not a raw face from a webcam bubble or a HUD element.
+    subject_x: float | None = None
+    subject_y: float | None = None
+    subject_conf: float = 0.0
+    subject_kind: str = "center"
+
+
+def _game_motion_point(diff, width: int, height: int):
+    """Centroid of the largest motion blob near the middle of the frame.
+
+    A raw weighted average of *every* changed pixel drifts toward HUDs, minimaps
+    and scrolling backgrounds. Picking the dominant blob and pulling it gently
+    toward the centre keeps the crop on the game character, which is the whole
+    point of the game-subject lock.
+    """
+    mask = (diff > max(12, float(diff.mean()) + 6)).astype(np.uint8)
+    bx, by = max(2, int(width * 0.06)), max(2, int(height * 0.06))
+    mask[:by, :] = 0
+    mask[height - by:, :] = 0
+    mask[:, :bx] = 0
+    mask[:, width - bx:] = 0
+    if not mask.any():
+        return None
+
+    import cv2
+
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+    if count <= 1:
+        return None
+    cx0, cy0 = width / 2.0, height / 2.0
+    best = None
+    for i in range(1, count):
+        area = float(stats[i, cv2.CC_STAT_AREA])
+        if area < 12:
+            continue
+        px, py = centroids[i]
+        # Big blobs win; a blob near the middle wins a tie against a HUD edge.
+        score = area / (1.0 + 0.5 * (abs(px - cx0) / width + abs(py - cy0) / height))
+        if best is None or score > best[0]:
+            best = (score, i)
+    if best is None:
+        return None
+
+    ys, xs = np.nonzero(labels == best[1])
+    weights = diff[ys, xs].astype(np.float64)
+    total = float(weights.sum()) or 1.0
+    mx = clamp(float((xs * weights).sum() / total) / max(width, 1), 0, 1)
+    my = clamp(float((ys * weights).sum() / total) / max(height, 1), 0, 1)
+    # Small centre bias: character dominates even when an effect pulls the blob.
+    mx = clamp(mx * 0.82 + 0.5 * 0.18, 0, 1)
+    my = clamp(my * 0.82 + 0.45 * 0.18, 0, 1)
+    area = float(stats[best[1], cv2.CC_STAT_AREA])
+    conf = clamp(area / float(width * height) * 14.0, 0, 1)
+    return mx, my, conf
 
 
 def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
@@ -63,7 +118,7 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
     if cache_path and cache_path.exists() and path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if (cached.get("version") == 2 and cached.get("samples")
+            if (cached.get("version") == 3 and cached.get("samples")
                     and cached.get("sample_interval") == sample_interval
                     and cached.get("mtime") == path.stat().st_mtime):
                 log.info("Using cached subject track (%d samples)", len(cached["samples"]))
@@ -120,17 +175,15 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
                     sample.face_h = fh / small.shape[0]
                     sample.face_conf = max(0.2, min(1.0, conf))
 
-            # Motion centroid: follows the action when no face is visible.
+            # Motion: the dominant centre-of-action blob (the game character).
             if prev_gray is not None:
                 diff = cv2.GaussianBlur(cv2.absdiff(gray, prev_gray), (9, 9), 0)
-                mask = diff > max(12, float(diff.mean()) + 6)
-                if mask.any():
-                    ys, xs = np.nonzero(mask)
-                    weights = diff[ys, xs].astype(np.float64)
-                    total_w = float(weights.sum()) or 1.0
-                    sample.motion_x = clamp(float((xs * weights).sum() / total_w) / small.shape[1], 0, 1)
-                    sample.motion_y = clamp(float((ys * weights).sum() / total_w) / small.shape[0], 0, 1)
-                    sample.motion_conf = clamp(float(mask.mean()) * 8.0, 0, 1)
+                point = _game_motion_point(diff, small.shape[1], small.shape[0])
+                if point:
+                    sample.motion_x, sample.motion_y, sample.motion_conf = point
+                    sample.subject_x, sample.subject_y = point[0], point[1]
+                    sample.subject_conf = point[2]
+                    sample.subject_kind = "motion"
             prev_gray = gray
             samples.append(sample)
         index += 1
@@ -144,7 +197,7 @@ def analyse_video(path: Path, cfg, log: Logger, cache_path: Path | None = None,
         "height": height,
         "frame_count": total,
         "sample_interval": sample_interval,
-        "version": 2,  # v2 adds face_w/face_h for corner-facecam detection
+        "version": 3,  # v3 adds the centre-of-action game-subject track
         "samples": [s.__dict__ for s in samples],
     }
     if cache_path:
@@ -231,6 +284,27 @@ def _inside(px: float, py: float, rect: dict | None) -> bool:
                 and rect["y"] <= py <= rect["y"] + rect["h"])
 
 
+def subject_point(sample: dict, ignore_rect: dict | None = None):
+    """Pick the game character for one sample.
+
+    Priority: a detected face that is NOT the webcam bubble (in gameplay this is
+    the character), then the centre-of-action motion blob, then the middle of
+    the frame. A real person's facecam must never steal the crop.
+    """
+    fx, fy = sample.get("face_x"), sample.get("face_y")
+    if (fx is not None and (sample.get("face_conf") or 0) >= 0.12
+            and not _inside(float(fx), float(fy or 0.45), ignore_rect)):
+        return float(fx), float(fy or 0.45), "character", float(sample.get("face_conf") or 0.5)
+    sx, sy = sample.get("subject_x"), sample.get("subject_y")
+    if (sx is not None and sy is not None and (sample.get("subject_conf") or 0) > 0.05):
+        return float(sx), float(sy), str(sample.get("subject_kind") or "motion"), \
+            float(sample.get("subject_conf") or 0.5)
+    mx, my = sample.get("motion_x"), sample.get("motion_y")
+    if (mx is not None and my is not None and (sample.get("motion_conf") or 0) > 0.05):
+        return float(mx), float(my), "motion", float(sample.get("motion_conf") or 0.5)
+    return 0.5, 0.45, "center", 0.0
+
+
 def _median(values, window=3):
     half = window // 2
     return [float(sorted(values[max(0, i - half):i + half + 1])[len(values[max(0, i - half):i + half + 1]) // 2])
@@ -285,7 +359,14 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
     src_h = track.get("height") or 1080
     samples = track.get("samples") or []
     if not samples:
-        return {"x": ([0.0], [0.0]), "y": ([0.0], [0.0]), "face_coverage": 0.0}
+        # No tracking data must still produce a centred crop. A top-left crop
+        # would push the character off frame - the opposite of the subject lock.
+        cx0 = max(0.0, (src_w - crop_w) / 2.0)
+        cy0 = max(0.0, (src_h - crop_h) / 2.0)
+        span = max(0.1, end - start)
+        return {"x": ([0.0, span], [cx0, cx0]), "y": ([0.0, span], [cy0, cy0]),
+                "face_coverage": 0.0, "focus_x": 0.5, "focus_y": 0.45,
+                "subject": "center"}
 
     max_x, max_y = max(0, src_w - crop_w), max(0, src_h - crop_h)
     fx = clamp(focus_x, 0.25, 0.75)
@@ -296,26 +377,20 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
     inside = [s for s in samples if start - interval <= s["t"] <= end + interval] or samples
     xs, ys, times = [], [], []
     face_hits = 0
-    last_face = None
-    last_motion = None
+    last_subject = None
+    kinds: list[str] = []
     for s in inside:
         t = clamp(s["t"] - start, 0.0, end - start)
-        cx = cy = None
-        if (s.get("face_x") is not None and (s.get("face_conf") or 0) >= 0.05
-                and not _inside(float(s["face_x"]), float(s.get("face_y") or 0.45),
-                                ignore_rect)):
-            cx, cy = s["face_x"], s.get("face_y") or 0.45
-            face_hits += 1
-            last_face = (cx, cy)
-        elif last_face is not None:
-            cx, cy = last_face
-        elif s.get("motion_x") is not None and (s.get("motion_conf") or 0) > 0.05:
-            cx, cy = s["motion_x"], s["motion_y"]
-            last_motion = (cx, cy)
-        elif last_motion is not None:
-            cx, cy = last_motion
+        cx, cy, kind, conf = subject_point(s, ignore_rect)
+        if conf > 0.05:
+            last_subject = (cx, cy)
+            kinds.append(kind)
+            if kind == "character":
+                face_hits += 1
+        elif last_subject is not None:
+            cx, cy = last_subject
         else:
-            cx, cy = 0.5, 0.5
+            cx, cy = 0.5, 0.45
 
         sx, sy = cx * src_w, cy * src_h
         x = clamp(sx - crop_w * fx, 0, max_x)
@@ -355,8 +430,10 @@ def build_path(track: dict, start: float, end: float, crop_w: int, crop_h: int, 
     if yt and yt[-1] < span:
         yt.append(span); yv.append(yv[-1])
 
+    dominant = max(set(kinds), key=kinds.count) if kinds else "center"
     return {
         "x": (kt, kx), "y": (yt, yv),
         "face_coverage": face_hits / max(1, len(inside)),
         "focus_x": fx, "focus_y": fy,
+        "subject": dominant,
     }

@@ -86,14 +86,16 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
    - **Speech model** — `tiny` (fastest) → `base` (recommended) → `small` / `medium` (more accurate, slower).
      Press the **?** button in the app for a full plain-English explanation of each model.
    - **Language** — leave blank for auto-detect, or type a two-letter code such as `en`, `hi`, `es`.
-   - **Video framing** — **AI picks best (recommended)** is the default: the tool measures the subject
-     in every moment and chooses either a subject-following crop or a whole-frame look, with the
-     subject kept slightly above the captions. If you configured an AI provider it makes the choice;
-     otherwise a free local heuristic does. You can still force **Fit whole frame (blurred / black
-     bars)** or **Follow subject (crops sides)** yourself.
+   - **Video framing** — the **game character is always the main subject**. Every clip is a
+     subject-following crop into the vertical frame; whole-frame looks were removed because they
+     made the character tiny next to the HUD and background. **AI picks best (recommended)** finds
+     the character per moment, and the free local tracker does the same when no API is configured.
+     Even if you pick **Fit whole frame (blurred / black bars)** manually, it is upgraded to a
+     character crop so the guarantee holds no matter what is selected.
    - **Output folder** — where finished clips are saved.
-   - Toggles for face tracking (needed for AI/auto framing), captions, hook overlay and
-     audio normalization and **Facecam bubble**.
+   - Toggles for captions, hook overlay, audio normalization and **Facecam bubble**. Character
+     tracking stays on because it is required for the crop (the old face-tracking toggle no
+     longer switches it off).
     - **Facecam bubble** (off by default) - for videos with a presenter webcam in a corner of
       the original frame (the popular gaming-shorts look). The tiny free face detector spots a
       small face that stays in one corner, then puts that person in a circular inset in the top
@@ -157,7 +159,7 @@ downloads the speech model once.
   width × height. Captions, cropping and thumbnails all adapt to the chosen size.
 - **Speed / Quality** — pick a mode:
   - **Fast (turbo)** — 480p source, tiny speech model, faster encode. Best for quick previews.
-  - **Balanced** — recommended; 720p source, whole-frame vertical framing and clean audio.
+  - **Balanced** — recommended; 720p source, game-character crop and clean audio.
   - **Best quality** — 1080p source, more accurate transcription and a cleaner final picture, slower render.
   The mode sets sensible defaults; you can still fine-tune the speech model and checkboxes in the
   **Make Clips** tab afterwards.
@@ -217,19 +219,20 @@ every one is now rejected.
 ### AI-chosen clip style (best variant)
 
 With **Video framing → AI picks best**, every moment is measured before rendering: face coverage,
-motion coverage, subject position/spread and the source vs output aspect ratio. The configured AI
-provider (Gemini / OpenAI-compatible; set it in the *AI & Output* tab) then picks the best look per
-clip:
+motion coverage, subject position/spread and the source vs output aspect ratio. A corner webcam face
+is detected and excluded so it cannot steal the crop. The configured AI provider (Gemini /
+OpenAI-compatible; set it in the *AI & Output* tab) then says where the game character is in each
+clip. No key? A free local tracker does the same, and any AI failure falls back to it.
 
-- **Follow subject** — crop into the vertical canvas and pan with the face/action. The crop keeps a
-  margin around the subject and places it slightly above the caption area.
-- **Whole frame (blurred)** — the entire picture stays visible on a blurred vertical background.
-  Best for gameplay or wide action where cutting the sides would lose context.
-- **Whole frame (black bars)** — clean bars instead of a blur.
+The result is always **Follow subject**: a crop into the vertical canvas that pans with the game
+character, keeps a margin around them, and places them slightly above the caption area. Whole-frame
+looks are no longer offered, even to the AI or to a manual setting, because they leave the character
+small against the HUD/minimap. The crop uses the dominant centre-of-action motion blob (not a HUD
+edge or scrolling background), prefers a detected character face, and centres the frame when no
+tracking data exists. The chosen style, its reason, its source (`ai` / `local` / `manual`) and the
+locked subject are saved in each clip's `.txt` and `.json`.
 
-No key? The same decision is made by a free local heuristic, and any AI failure automatically falls
-back to it. The chosen style, its reason and its source (`ai` / `local` / `manual`) are saved in each
-clip's `.txt` and `.json`.
+`python framingtest.py` verifies every one of those paths, including an actual centered-crop render.
 
 ---
 
@@ -276,7 +279,7 @@ Viral_Clip make\
 | Age-restricted / members-only video | Use the same **YouTube Download** cookies setting above; anonymous downloads cannot access these videos. |
 | First run is slow / hanging | It is downloading the Whisper model once (~150 MB). Later runs are cached. |
 | Captions wrong language | Set the **Language** field, e.g. `en`. |
-| Face crop is off | Turn face tracking off for a centre crop, or use footage with a clearer subject. |
+| Character not centred | Tracking is always on now. Delete the cached `.track.json` in `%APPDATA%\ViralClipMake\cache` if the source video was replaced; without data the crop centres automatically. |
 | Facecam bubble did not appear | The **Facecam bubble** switch only fires when a small face stays in a top corner of the original video. Check the activity log: it says whether a webcam was found. Pick **Top left** / **Top right** explicitly if Auto picked the wrong side. Videos without a webcam are rendered normally. |
 | App window shows an error | Details are saved to `%APPDATA%\ViralClipMake\crash.log`. |
 | Low scores / poor picks | Feed livelier footage with clear speech; try a longer min/max window. |

@@ -1,24 +1,20 @@
-"""AI-assisted clip style selection and subject-aware framing.
+"""Game-character-first framing for vertical shorts.
 
-The style engine answers one question for every moment: how should this moment
-be fitted into a vertical short so the subject stays clearly visible?
+The style engine answers one question for every moment: where is the game
+character, and how do we crop so that character fills the vertical frame?
 
-Modes (``video.framing``):
-  auto      - AI picks the best style per clip (local heuristic if no API key)
-  track     - crop to the target ratio and follow the face / action
-  fit_blur  - show the whole frame on a blurred vertical canvas
-  fit_black - show the whole frame on black bars
-
-The local heuristic is the free default and never needs a key. When an AI
-provider is configured, the same choices are sent to the model together with
-measured subject signals (face coverage, motion, subject position) so the
-model can pick the right look for each moment.
+`track` is the only output framing. Whole-frame modes (`fit_blur`, `fit_black`)
+make the character tiny next to the HUD, minimap and background, which is the
+exact problem this lock fixes. AI and manual settings may still *suggest* a
+look, but `choose_styles()` always converts the decision to a subject-follow
+crop so the character is the main subject no matter what was configured.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
 
+from .faces import subject_point
 from .util import Logger, clamp
 
 FRAMINGS = ("auto", "track", "fit_blur", "fit_black")
@@ -39,14 +35,11 @@ class StyleDecision:
     reason: str = ""
     confidence: float = 0.0
     source: str = "local"     # ai | local | manual
+    subject: str = "game character"  # what the crop is locked onto
+    locked: bool = True       # game-subject lock is always enforced
 
     def as_dict(self) -> dict:
         return asdict(self)
-
-
-def _in_rect(px: float, py: float, rect: dict | None) -> bool:
-    return bool(rect and rect["x"] <= px <= rect["x"] + rect["w"]
-                and rect["y"] <= py <= rect["y"] + rect["h"])
 
 
 def _empty_metrics() -> dict:
@@ -54,7 +47,7 @@ def _empty_metrics() -> dict:
         "face_coverage": 0.0, "motion_coverage": 0.0,
         "cx": 0.5, "cy": 0.5, "spread_x": 0.0, "spread_y": 0.0,
         "edge_hits": 0.0, "samples": 0,
-        "source_ratio": 16 / 9, "target_ratio": 9 / 16,
+        "source_ratio": 16 / 9, "target_ratio": 9 / 16, "subject": "center",
     }
 
 
@@ -82,19 +75,19 @@ def moment_metrics(track: dict | None, moment, cfg, info=None,
         return result
 
     faces, motions, all_x, all_y = [], [], [], []
+    kinds: list[str] = []
     for s in inside:
-        fx, fy = s.get("face_x"), float(s.get("face_y") or 0.45)
-        if (fx is not None and (s.get("face_conf") or 0) >= 0.05
-                and not _in_rect(float(fx), fy, ignore_rect)):
-            p = (float(fx), fy)
-            faces.append(p)
-            all_x.append(p[0]); all_y.append(p[1])
-        elif s.get("motion_x") is not None and (s.get("motion_conf") or 0) > 0.05:
-            p = (float(s["motion_x"]), float(s.get("motion_y") or 0.5))
-            motions.append(p)
-            all_x.append(p[0]); all_y.append(p[1])
+        x, y, kind, conf = subject_point(s, ignore_rect)
+        if conf <= 0.05:
+            continue
+        kinds.append(kind)
+        all_x.append(x); all_y.append(y)
+        if kind == "character":
+            faces.append((x, y))
+        else:
+            motions.append((x, y))
 
-    points = faces or motions
+    points = faces + motions
     n = len(inside)
     result["samples"] = n
     result["face_coverage"] = round(len(faces) / n, 3)
@@ -108,6 +101,7 @@ def moment_metrics(track: dict | None, moment, cfg, info=None,
             sum(1 for p in points if p[0] < 0.2 or p[0] > 0.8 or p[1] < 0.12 or p[1] > 0.88)
             / len(points), 3
         )
+        result["subject"] = max(set(kinds), key=kinds.count) if kinds else "center"
     return result
 
 
@@ -121,43 +115,30 @@ def _focus_from(metrics: dict, cfg) -> tuple[float, float]:
 
 
 def local_decide(metrics: dict, cfg) -> StyleDecision:
-    """Free, deterministic style pick based on measured subject signals."""
+    """Free, deterministic pick: always crop to the game character.
+
+    Wide action, a HUD-heavy frame or a source that already matches the target
+    shape used to trigger `fit_blur`. That left the character small among the
+    background and was the main framing complaint. It is no longer an option.
+    """
     focus_x, focus_y = _focus_from(metrics, cfg)
-    ratio_gap = abs(float(metrics.get("source_ratio", 16 / 9))
-                    - float(metrics.get("target_ratio", 9 / 16)))
     face = float(metrics.get("face_coverage", 0))
     motion = float(metrics.get("motion_coverage", 0))
-    spread = float(metrics.get("spread_x", 0))
-    edge = float(metrics.get("edge_hits", 0))
+    subject = str(metrics.get("subject") or "center")
 
-    if ratio_gap < 0.06:
-        framing = "fit_blur"
-        reason = "source already matches output shape"
-        confidence = 0.95
-    elif face >= 0.30 and edge < 0.55:
-        framing = "track"
-        reason = f"face in {face:.0%} of samples - follow subject"
-        confidence = 0.65 + face * 0.3
-    elif motion >= 0.30 and spread >= 0.18:
-        framing = "fit_blur"
-        reason = "wide action - keep the whole frame"
-        confidence = 0.6 + motion * 0.3
-    elif face >= 0.12:
-        framing = "track"
-        reason = f"subject detected in {face:.0%} of samples"
-        confidence = 0.55 + face * 0.3
-    elif motion >= 0.15:
-        framing = "track"
-        reason = "motion detected - crop follows the action"
-        confidence = 0.55 + motion * 0.25
+    if subject == "character" and face >= 0.12:
+        reason = f"game character visible in {face:.0%} of samples - lock crop onto them"
+        confidence = 0.78 + face * 0.18
+    elif motion >= 0.15 or subject == "motion":
+        reason = "centre-of-action tracking - keep the game character dominant"
+        confidence = 0.70 + motion * 0.18
     else:
-        framing = "fit_blur"
-        reason = "no reliable subject - show full frame"
-        confidence = 0.5
+        reason = "no clear subject - centre crop still keeps the character in frame"
+        confidence = 0.65
 
-    return StyleDecision(framing=framing, focus_x=focus_x, focus_y=focus_y,
+    return StyleDecision(framing="track", focus_x=focus_x, focus_y=focus_y,
                          reason=reason, confidence=round(min(confidence, 0.97), 2),
-                         source="local")
+                         source="local", subject=subject)
 
 
 def _ai_decide(moments: list, metrics: list[dict], cfg, log: Logger) -> list[StyleDecision] | None:
@@ -176,22 +157,20 @@ def _ai_decide(moments: list, metrics: list[dict], cfg, log: Logger) -> list[Sty
             "subject_x": m["cx"],
             "subject_y": m["cy"],
             "subject_spread_x": m["spread_x"],
+            "subject": m["subject"],
             "source_ratio": m["source_ratio"],
             "target_ratio": m["target_ratio"],
         })
-    prompt = f"""You are an expert vertical short-form video editor. For EACH moment below,
-choose the framing that keeps the main subject clearly visible with correct cropping.
+    prompt = f"""You are a vertical short-form editor for GAMEPLAY clips. The game character
+must be the main subject of every clip. Choose "track" for EVERY moment: a crop that
+follows the detected character / centre of action and fills the vertical frame.
 
-Choices:
-- "track": crop to the target shape and follow the detected face/action. Best when one person or object is the subject.
-- "fit_blur": show the entire original frame centred on a blurred background. Best for gameplay or wide action where cutting sides loses context.
-- "fit_black": show the entire original frame on black bars. Best when the source already has bars or a fixed layout.
+Never choose "fit_blur" or "fit_black". Showing the whole 16:9 frame makes the
+character tiny next to the HUD, minimap and background, which is forbidden here -
+even for wide action, effects, or sources that already match the target shape.
 
-If face_coverage is high and the subject is fairly still, prefer "track".
-If motion_coverage is high and subject_spread_x is large, prefer "fit_blur" so nothing important is cut.
-If the source and target ratios are nearly equal, prefer "fit_blur".
-focus_x/focus_y are where the subject should sit inside the crop (0.0-1.0).
-Use focus_y around 0.38-0.45 so captions at the bottom do not cover the face.
+focus_x/focus_y say where the character should sit inside the crop (0.0-1.0).
+Use focus_x 0.35-0.65 and focus_y 0.38-0.45 so the bottom captions do not cover them.
 
 Return ONLY a JSON array, no markdown, in this exact shape:
 [{{"index":0,"framing":"track","focus_x":0.5,"focus_y":0.42,"reason":"short phrase","confidence":0.85}}]
@@ -217,9 +196,13 @@ MOMENTS:
         for i, (moment, m) in enumerate(zip(moments, metrics)):
             item = by_index.get(i) or {}
             framing = str(item.get("framing", "")).strip().lower()
-            if framing not in ("track", "fit_blur", "fit_black"):
-                local = local_decide(m, cfg)
-                decisions.append(local)
+            if framing != "track":
+                # Whole-frame suggestions are rejected here as well as in the
+                # final lock, so the log explains what happened at the source.
+                if framing in ("fit_blur", "fit_black"):
+                    log.warn("AI suggested %s for moment %d - game-subject lock requires a crop",
+                             framing, i)
+                decisions.append(local_decide(m, cfg))
                 continue
             fx, fy = _focus_from(m, cfg)
             try:
@@ -232,9 +215,10 @@ MOMENTS:
             except (TypeError, ValueError):
                 conf = 0.8
             decisions.append(StyleDecision(
-                framing=framing, focus_x=round(fx, 3), focus_y=round(fy, 3),
+                framing="track", focus_x=round(fx, 3), focus_y=round(fy, 3),
                 reason=str(item.get("reason") or "AI style pick")[:100],
                 confidence=round(conf, 2), source="ai",
+                subject=str(m.get("subject") or "game character"),
             ))
         log.ok("AI chose styles: " + ", ".join(d.framing for d in decisions))
         return decisions
@@ -252,22 +236,38 @@ def choose_styles(moments: list, track: dict | None, cfg, log: Logger,
     metrics = [moment_metrics(track, m, cfg, info, ignore_rect) for m in moments]
 
     if configured != "auto":
-        focus_y = clamp(float(cfg.get("video.subject_focus_y", 0.42) or 0.42), 0.3, 0.58)
         log.info("Clip style: %s (manual)", STYLE_LABELS.get(configured, configured))
-        return [StyleDecision(framing=configured, focus_x=0.5, focus_y=focus_y,
-                              reason="Manual style setting", confidence=1.0,
-                              source="manual") for _ in moments]
+        decisions = []
+        for m in metrics:
+            fx, fy = _focus_from(m, cfg)
+            decisions.append(StyleDecision(
+                framing=configured, focus_x=fx, focus_y=fy,
+                reason="Manual style setting", confidence=1.0, source="manual",
+            ))
+    else:
+        log.info("Clip style: auto - measuring the game character for each moment")
+        decisions = None
+        if bool(cfg.get("ai.auto_style", True)):
+            provider = str(cfg.get("ai.provider", "local") or "local").lower()
+            if provider in ("gemini", "claude", "openai"):
+                log.info("Asking %s where the game character is in each clip", provider)
+                decisions = _ai_decide(moments, metrics, cfg, log)
+        if decisions is None or len(decisions) != len(moments):
+            decisions = [local_decide(m, cfg) for m in metrics]
+            log.info("Local game-subject styles: " + ", ".join(d.reason for d in decisions))
 
-    log.info("Clip style: auto - measuring subject for each moment")
-    decisions = None
-    if bool(cfg.get("ai.auto_style", True)):
-        provider = str(cfg.get("ai.provider", "local") or "local").lower()
-        if provider in ("gemini", "claude", "openai"):
-            log.info("Asking %s to choose the best style per clip", provider)
-            decisions = _ai_decide(moments, metrics, cfg, log)
-    if decisions is None or len(decisions) != len(moments):
-        decisions = [local_decide(m, cfg) for m in metrics]
-        log.info("Local auto styles: " + ", ".join(
-            f"{STYLE_LABELS.get(d.framing, d.framing)} ({d.reason})" for d in decisions
-        ))
+    # Final guard: no matter what AI or settings asked for, every clip leaves
+    # here as a character-follow crop. This is the "main subject no matter what"
+    # guarantee, applied in one place so no code path can bypass it.
+    overridden = 0
+    for decision, m in zip(decisions, metrics):
+        if decision.framing != "track":
+            decision.framing = "track"
+            decision.reason = "game-subject lock - character stays the main subject"
+            decision.locked = True
+            overridden += 1
+        decision.subject = str(m.get("subject") or "game character")
+    if overridden:
+        log.info("Game-subject lock: upgraded %d whole-frame decision(s) to a character crop",
+                 overridden)
     return decisions

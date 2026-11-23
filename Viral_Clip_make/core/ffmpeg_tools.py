@@ -126,6 +126,11 @@ def crop_geometry(width: int, height: int, target_w: int = 1080, target_h: int =
     return max(2, crop_w), max(2, crop_h)
 
 
+def centered_crop_xy(width: int, height: int, crop_w: int, crop_h: int) -> tuple[int, int]:
+    """Fallback crop origin that keeps the middle of the frame (the character)."""
+    return max(0, (width - crop_w) // 2), max(0, (height - crop_h) // 2)
+
+
 def rdp_simplify(points: list[tuple[float, float]], epsilon: float = 3.0) -> list[tuple[float, float]]:
     if len(points) <= 2:
         return list(points)
@@ -340,13 +345,17 @@ def render_clip(req: RenderRequest, log=None) -> dict:
         # Subject-follow crop: fills the frame but necessarily cuts the sides.
         crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
         max_x, max_y = max(0, info.width - crop_w), max(0, info.height - crop_h)
-        x_expr = "0"
+        # Default to the middle of the source, never the top-left corner. A
+        # tracked path overrides this; with no track the character still stays
+        # the main subject instead of being cropped away.
+        default_x, default_y = centered_crop_xy(info.width, info.height, crop_w, crop_h)
+        x_expr = f"{default_x:.2f}" if max_x > 0 else "0"
         if req.crop_x and max_x > 0:
             times, values = req.crop_x
             values = [clamp(v, 0, max_x) for v in values]
             if max(values) - min(values) >= 1.5:
                 x_expr = path_expression(times, values, "t")
-        y_expr = "0"
+        y_expr = f"{default_y:.2f}" if max_y > 0 else "0"
         if req.crop_y and max_y > 0:
             times, values = req.crop_y
             values = [clamp(v, 0, max_y) for v in values]

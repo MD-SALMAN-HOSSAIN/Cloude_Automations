@@ -276,9 +276,9 @@ class App:
         ).pack(fill="x", pady=(3, 3))
         ctk.CTkLabel(
             frame_row,
-            text="AI picks best measures the subject in every moment and chooses the crop or full-frame look. "
-                 "It uses your configured AI when available, otherwise a free local heuristic. "
-                 "Gameplay keeps the whole picture; a person talking to camera is followed.",
+            text="Every clip is cropped to keep the game character as the main subject. "
+                 "AI (when configured) or the free local tracker finds the character per moment; "
+                 "whole-frame looks are never used because they leave the character tiny.",
             font=FONT_SMALL, text_color=MUTED, wraplength=880, justify="left",
         ).pack(anchor="w")
 
@@ -301,15 +301,19 @@ class App:
         self.hook_var = ctk.BooleanVar(value=bool(self.cfg.get("features.hook", True)))
         self.norm_var = ctk.BooleanVar(value=bool(self.cfg.get("features.normalize_audio", True)))
         self.facecam_var = ctk.BooleanVar(value=bool(self.cfg.get("features.facecam_pip", False)))
-        for text, var in (("Face tracking", self.face_var), ("Captions", self.cap_var),
+        for text, var in (("Character lock", self.face_var), ("Captions", self.cap_var),
                           ("Hook overlay", self.hook_var), ("Normalize audio", self.norm_var),
                           ("Facecam bubble", self.facecam_var)):
             switch = ctk.CTkSwitch(switches, text=text, variable=var, onvalue=True, offvalue=False,
                                    font=FONT_SMALL, progress_color=PINK,
                                    fg_color="#33394a")
             switch.pack(side="left", padx=(0, 18))
-            if text == "Face tracking":
-                self.face_switch = switch
+            if text == "Character lock":
+                # The game character must stay the subject no matter what, so
+                # tracking cannot be switched off by the user.
+                var.set(True)
+                self.face_var.set(True)
+                switch.configure(state="disabled")
 
         fc_row = ctk.CTkFrame(settings, fg_color="transparent")
         fc_row.pack(fill="x", padx=18, pady=(0, 8))
@@ -643,10 +647,8 @@ class App:
     def _on_framing(self, _value=None):
         framing = FRAMING_LABELS.get(self.framing_var.get(), "auto")
         self.cfg.set("video.framing", framing)
-        if getattr(self, "face_switch", None) is not None:
-            # Auto needs the subject track to make its decision.
-            state = "normal" if framing in ("track", "auto") else "disabled"
-            self.face_switch.configure(state=state)
+        # Character tracking stays on for every framing mode: it is what keeps
+        # the game character as the main subject.
 
     def _on_device(self, _value=None):
         choice = DEVICE_LABELS.get(self.device_var.get(), "auto")
