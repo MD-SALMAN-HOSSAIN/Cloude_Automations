@@ -15,7 +15,7 @@ from core.config import Config, app_data_dir
 from core.layout import DEFAULT_AI_PROMPT
 from core.pipeline import run_pipeline
 from core.util import Logger, clamp
-from gui.sting import StingSplash, StingSuccess, StingToast
+from gui.completion import CompletionAnimation
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -144,10 +144,6 @@ VIRAL_PRESET = {
     "auto_style": True,
 }
 
-# ~1.55 s of animation + ~0.2 s fade + window reveal = about 2 seconds.
-BOOT_STING_MS = 1550
-
-
 class App:
     def __init__(self, root: ctk.CTk):
         self.root = root
@@ -156,7 +152,7 @@ class App:
         self.running = False
         self.checking = False
         self.result = None
-        self._success = None
+        self._completion = None
         _init_fonts()
         self._build()
         self._cleanup_startup()
@@ -170,39 +166,6 @@ class App:
                           f"Auto-clean removed {freed / 1e6:.1f} MB of old temp/partial files")
         except Exception as exc:
             self._log("WARN", f"Startup cleanup skipped: {exc}")
-
-    # ------------------------------------------------------------------
-    def reveal(self):
-        """Called by the boot sting: fade the real window in and sweep the header."""
-        try:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.attributes("-alpha", 0.0)
-            self._reveal_step(0)
-            self._animate_header_sweep(0)
-        except Exception:
-            try:
-                self.root.deiconify()
-            except Exception:
-                pass
-
-    def _reveal_step(self, step: int = 0):
-        try:
-            self.root.attributes("-alpha", min(1.0, step / 12.0))
-            if step < 12:
-                self.root.after(18, lambda: self._reveal_step(step + 1))
-        except Exception:
-            pass
-
-    def _animate_header_sweep(self, x: int = 0):
-        try:
-            self.header_canvas.coords(self.header_sweep, x, 84, x + 70, 93)
-            if x < 1200:
-                self.root.after(16, lambda: self._animate_header_sweep(x + 34))
-            else:
-                self.header_canvas.coords(self.header_sweep, -100, 84, -30, 93)
-        except Exception:
-            pass
 
     def apply_viral_preset(self):
         """Apply and save the one-click settings that give clips the best reach."""
@@ -258,39 +221,20 @@ class App:
 
         self._log("OK", "BEST FOR VIRAL preset saved as default: 9:16, 1080p, "
                         "split-screen facecam + gameplay, captions + hook, character lock, 10 clips.")
-        self._pulse_button(getattr(self, "viral_btn", None))
         if getattr(self, "saved_label", None) is not None:
             self.saved_label.configure(text="✓ Viral preset is now the default")
             self.root.after(2800, lambda: self.saved_label.configure(text=""))
         if getattr(self, "signal_defaults", None) is not None:
             self.signal_defaults.configure(text="Viral preset", text_color=GREEN)
-        try:
-            StingToast(self.root, "✓ BEST VIRAL SETTINGS SAVED")
-        except Exception:
-            pass
 
-    def _pulse_button(self, button, step: int = 0):
-        if button is None:
-            return
+    def _play_completion_animation(self, count: int, output_dir: str):
+        """Celebrate once, after the clipping task has finished."""
         try:
-            button.configure(fg_color=PINK if step % 2 == 0 else PURPLE)
-            if step < 5:
-                self.root.after(120, lambda: self._pulse_button(button, step + 1))
-            else:
-                button.configure(fg_color=PURPLE)
-        except Exception:
-            pass
-
-    def _play_success_animation(self, count: int, output_dir: str):
-        try:
-            if self._success is not None:
-                try:
-                    self._success.close()
-                except Exception:
-                    pass
-            self._success = StingSuccess(
+            if self._completion is not None:
+                self._completion.close()
+            self._completion = CompletionAnimation(
                 self.root, count, output_dir,
-                callback=lambda: setattr(self, "_success", None),
+                callback=lambda: setattr(self, "_completion", None),
             )
         except Exception:
             messagebox.showinfo(
@@ -348,8 +292,6 @@ class App:
             b = int(0xff + (0x6e - 0xff) * ratio)
             canvas.create_rectangle(i * 6, 86, i * 6 + 7, 91,
                                     fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
-        self.header_sweep = canvas.create_rectangle(
-            -100, 84, -30, 93, fill="#ffffff", outline="")
 
     def _card(self, parent, title: str):
         card = ctk.CTkFrame(parent, corner_radius=16, fg_color=CARD,
@@ -1266,7 +1208,7 @@ class App:
                     self.go_btn.configure(state="normal", text="MAKE VIRAL CLIPS", fg_color=PINK)
                     self.open_btn.configure(state="normal")
                     self._log("OK", f"Finished! {len(self.result['clips'])} clips in {self.result['output_dir']}")
-                    self._play_success_animation(
+                    self._play_completion_animation(
                         len(self.result["clips"]), self.result["output_dir"])
                     if self.checking:
                         self.root.after(80, self._poll)
@@ -1290,30 +1232,8 @@ _APP = None
 
 
 def launch():
-    """Show the neon boot sting while the app is constructed, then reveal it."""
+    """Create and run the app window (the only animation plays on completion)."""
     global _APP
     root = ctk.CTk()
-    root.withdraw()
-    try:
-        splash = StingSplash(root, min_duration_ms=BOOT_STING_MS)
-    except Exception:
-        splash = None
-
-    if splash is None:
-        _APP = App(root)
-        root.deiconify()
-        root.mainloop()
-        return
-
-    def _build():
-        global _APP
-        try:
-            app = App(root)
-            _APP = app  # keep every Tk variable alive for the whole session
-            splash.finish(app.reveal, min_delay_ms=120)
-        except Exception:
-            splash.finish(root.destroy)
-            raise
-
-    root.after(60, _build)
+    _APP = App(root)  # keep every Tk variable alive for the whole session
     root.mainloop()
