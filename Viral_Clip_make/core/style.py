@@ -24,6 +24,7 @@ STYLE_LABELS = {
     "track": "Follow subject (crop)",
     "fit_blur": "Whole frame (blurred)",
     "fit_black": "Whole frame (black bars)",
+    "layout": "Layout template",
 }
 
 

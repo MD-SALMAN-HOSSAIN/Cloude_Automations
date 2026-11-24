@@ -91,7 +91,11 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
      made the character tiny next to the HUD and background. **AI picks best (recommended)** finds
      the character per moment, and the free local tracker does the same when no API is configured.
      Even if you pick **Fit whole frame (blurred / black bars)** manually, it is upgraded to a
-     character crop so the guarantee holds no matter what is selected.
+     character crop so the guarantee holds no matter what is selected. The small toggle in this
+     section's header turns Video framing off: the four buttons dim and are disabled, a muted
+     **Off — using Layout template only** badge appears, and no AI or local subject tracker runs
+     for framing. The toggle is saved with your other quick settings and is left alone by the
+     **BEST SETTINGS FOR VIRAL** preset.
    - **Layout template** — **Split-screen gaming (facecam top)** is the default: the speaker
      fills the top ~33% of the canvas and the tracked gameplay fills the bottom ~57%, with small
      blurred safety bars at the very top and bottom for the Shorts UI. Set **Facecam height** /
@@ -100,6 +104,8 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
      A corner webcam is detected automatically; otherwise a persistent face near the top of the
      frame is used. With no detectable face the app falls back to the normal single-frame crop.
      **Single video** restores the older one-panel look (with the optional corner bubble).
+     With Video framing switched off, the same split boxes are used from geometry alone: a
+     top-centre facecam region and a centred gameplay crop, with no face or character tracking.
    - **Output folder** — where finished clips are saved.
    - Toggles for captions, hook overlay, audio normalization and **Facecam bubble**. Character
      tracking stays on because it is required for the crop (the old face-tracking toggle no

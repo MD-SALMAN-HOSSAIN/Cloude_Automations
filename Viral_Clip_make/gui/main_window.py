@@ -26,6 +26,7 @@ CARD2 = "#1e2331"
 BORDER = "#2b3242"
 TEXT = "#eef0f6"
 MUTED = "#98a1b6"
+DIM_MUTED = "#4c515d"  # muted text at ~45% opacity over BG
 PINK = "#ff3d6e"
 PINK_HOVER = "#ff6289"
 PURPLE = "#7c5cff"
@@ -388,24 +389,41 @@ class App:
 
         frame_row = ctk.CTkFrame(settings, fg_color="transparent")
         frame_row.pack(fill="x", padx=18, pady=(0, 4))
-        ctk.CTkLabel(frame_row, text="Video framing", font=FONT_SMALL,
-                     text_color=MUTED).pack(anchor="w")
+        frame_header = ctk.CTkFrame(frame_row, fg_color="transparent")
+        frame_header.pack(fill="x")
+        ctk.CTkLabel(frame_header, text="Video framing", font=FONT_SMALL,
+                     text_color=MUTED).pack(side="left")
+        self.framing_off_badge = ctk.CTkLabel(
+            frame_header, text="Off — using Layout template only", font=FONT_SMALL,
+            text_color=MUTED, fg_color=CARD2, corner_radius=8, padx=8, pady=2)
+        self.framing_toggle_var = ctk.BooleanVar(
+            value=bool(self.cfg.get("video.framing_enabled", True)))
+        ctk.CTkSwitch(
+            frame_header, text="", variable=self.framing_toggle_var,
+            onvalue=True, offvalue=False, command=self._on_framing_toggle,
+            width=52, switch_width=40, switch_height=22,
+            progress_color=PINK, fg_color="#33394a",
+            button_color=TEXT, button_hover_color="#ffffff",
+        ).pack(side="right")
         self.framing_var = ctk.StringVar(value=FRAMING_FROM_KEY.get(
             str(self.cfg.get("video.framing", "auto")), "AI picks best (recommended)"))
-        ctk.CTkSegmentedButton(
+        self.framing_segments = ctk.CTkSegmentedButton(
             frame_row, values=list(FRAMING_LABELS), variable=self.framing_var,
             height=36, corner_radius=10, font=FONT_SMALL,
             selected_color=PINK, selected_hover_color=PINK_HOVER,
             unselected_color=CARD2, unselected_hover_color="#2c3344",
             text_color=TEXT, command=self._on_framing,
-        ).pack(fill="x", pady=(3, 3))
-        ctk.CTkLabel(
+        )
+        self.framing_segments.pack(fill="x", pady=(3, 3))
+        self.framing_desc = ctk.CTkLabel(
             frame_row,
             text="Every clip is cropped to keep the game character as the main subject. "
                  "AI (when configured) or the free local tracker finds the character per moment; "
                  "whole-frame looks are never used because they leave the character tiny.",
             font=FONT_SMALL, text_color=MUTED, wraplength=650, justify="left",
-        ).pack(anchor="w")
+        )
+        self.framing_desc.pack(anchor="w")
+        self._apply_framing_toggle_state(bool(self.framing_toggle_var.get()))
 
         layout_row = ctk.CTkFrame(settings, fg_color="transparent")
         layout_row.pack(fill="x", padx=18, pady=(6, 2))
@@ -868,6 +886,43 @@ class App:
             "Nothing needs installing — NVIDIA drivers are all that is required.",
         )
 
+    def _on_framing_toggle(self, *_):
+        """Video framing off = the Layout template is the only layout control."""
+        enabled = bool(self.framing_toggle_var.get())
+        self.cfg.set("video.framing_enabled", enabled)
+        self._apply_framing_toggle_state(enabled)
+
+    def _apply_framing_toggle_state(self, enabled: bool):
+        """Dim and disable the framing choices, or restore them (no-op safe)."""
+        segments = getattr(self, "framing_segments", None)
+        if segments is not None:
+            try:
+                segments.configure(
+                    state="normal" if enabled else "disabled",
+                    selected_color=PINK if enabled else DIM_MUTED,
+                    selected_hover_color=PINK_HOVER if enabled else DIM_MUTED,
+                    unselected_color=CARD2 if enabled else "#171b26",
+                    unselected_hover_color="#2c3344" if enabled else "#171b26",
+                    text_color=TEXT if enabled else DIM_MUTED,
+                )
+            except Exception:
+                # Older CustomTkinter builds reject some colour keywords; the
+                # state change alone still gives pointer-events: none.
+                try:
+                    segments.configure(state="normal" if enabled else "disabled")
+                except Exception:
+                    pass
+        desc = getattr(self, "framing_desc", None)
+        if desc is not None:
+            desc.configure(text_color=MUTED if enabled else DIM_MUTED)
+        badge = getattr(self, "framing_off_badge", None)
+        if badge is not None:
+            if enabled:
+                if badge.winfo_manager():
+                    badge.pack_forget()
+            elif not badge.winfo_manager():
+                badge.pack(side="left", padx=(8, 0))
+
     def _on_framing(self, _value=None):
         framing = FRAMING_LABELS.get(self.framing_var.get(), "auto")
         self.cfg.set("video.framing", framing)
@@ -1115,6 +1170,7 @@ class App:
             "video.custom_width": self._int(self.cw_var, 1080),
             "video.custom_height": self._int(self.ch_var, 1920),
             "video.framing": FRAMING_LABELS.get(self.framing_var.get(), "fit_blur"),
+            "video.framing_enabled": bool(self.framing_toggle_var.get()),
             "whisper.device": DEVICE_LABELS.get(self.device_var.get(), "auto"),
             "whisper.compute_type": str(self.cfg.get("whisper.compute_type", "auto")),
             "render.encoder": ENCODER_LABELS.get(self.encoder_var.get(), "auto"),

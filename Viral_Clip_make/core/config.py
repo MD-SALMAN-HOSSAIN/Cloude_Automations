@@ -44,6 +44,7 @@ def default_settings() -> dict:
         "whisper.compute_type": "auto",    # auto -> int8 on CPU, float16 on GPU
         "render.encoder": "auto",          # auto | cpu | gpu (falls back to CPU)
         "video.framing": "auto",           # auto (AI picks) | fit_blur | fit_black | track
+        "video.framing_enabled": True,     # off = Layout template only, no subject tracking
         "video.subject_focus_y": 0.42,     # subject sits above captions in a tracked crop
         "video.crop_padding": 0.06,        # keep this margin around a tracked subject
         "ai.auto_style": True,             # let the AI choose framing per clip when available

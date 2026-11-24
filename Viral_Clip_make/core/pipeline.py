@@ -30,6 +30,25 @@ def _report(progress, pct: float, message: str):
         progress(pct, message)
 
 
+def _layout_facecam_rect(info) -> dict:
+    """Top-centre facecam crop from geometry alone (no face detection).
+
+    The split template always needs a source rectangle for the upper panel. With
+    Video framing disabled we cannot ask the tracker where the webcam is, so we
+    take a medium-close top-centre region instead. ``_split_layout_chains`` then
+    centre-crops it into the configured facecam box.
+    """
+    fw = max(2, min(int(info.width), int(info.width * 0.30)))
+    fh = max(2, min(int(info.height), int(info.height * 0.42)))
+    return {
+        "x": max(0, (int(info.width) - fw) // 2) / max(1, int(info.width)),
+        "y": 0.0,
+        "w": fw / max(1, int(info.width)),
+        "h": fh / max(1, int(info.height)),
+        "corner": "center",
+    }
+
+
 def select_moments(transcript: dict, rms: list, cfg, log: Logger,
                    progress=None) -> list:
     """Combine AI and local picks without letting an empty answer abort the run.
@@ -123,67 +142,91 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     rms = rms_curve(audio)
     moments = select_moments(transcript, rms, cfg, log, progress)
 
-    # 5. Game-subject framing -----------------------------------------------
+    # 5. Framing -------------------------------------------------------------
+    layout_only = not bool(cfg.get("video.framing_enabled", True))
     track = None
+    subject_track = None
     crop_w = crop_h = 0
     split_on = bool(cfg.get("features.split_layout", False))
     facecam_on = split_on or bool(cfg.get("features.facecam_pip", False))
     facecam = None
     webcam_rect = None
     split_boxes_px = None
-    # The game character is the main subject no matter what. Tracking can never
-    # be switched off by a stale setting: without a track there is no crop, and
-    # without a crop the character disappears into the whole-frame background.
-    log.info("Game-subject lock: tracking the character for every clip")
-    _report(progress, 53, "Tracking the game character for smart framing...")
-    cache = cfg.cache_dir / (video.stem + ".track.json")
-    track = faces.analyse_video(
-        video, cfg, log, cache_path=cache,
-        sample_interval=float(cfg.get("speed.face_interval", 0.5)),
-        max_seconds=analysis_seconds,
-    )
-    corner = str(cfg.get("video.facecam_corner", "auto") or "auto").lower()
-    webcam_rect = faces.find_facecam(track, corner=corner) if track else None
-    if split_on:
-        # Corner webcam first, otherwise a persistent face at the top of frame.
-        facecam = webcam_rect or (faces.find_speaker_facecam(track, corner=corner)
-                                  if track else None)
-        if facecam:
+    ignore_rect = None
+
+    if layout_only:
+        # The Layout template owns the whole composition: no Gemini call, no
+        # local subject tracker and no video.framing crop override.
+        log.info("Video framing disabled — using Layout template directly")
+        _report(progress, 53, "Video framing off - using Layout template")
+        if split_on:
             split_boxes_px = split_boxes(cfg, width, height)
-            log.ok("Split layout: speaker fills the top panel, gameplay tracked below")
+            facecam = _layout_facecam_rect(info)
+            log.ok("Layout template: split screen - facecam top / gameplay bottom "
+                   "(no subject tracking)")
         else:
-            log.warn("Split layout needs a detected face - using the normal gameplay crop")
-            split_on = False
-            facecam_on = False
-            cfg.set("features.split_layout", False)  # keep captions on the single frame too
-    elif facecam_on:
-        if webcam_rect:
-            facecam = webcam_rect
-            log.ok("Facecam found in the %s corner - webcam goes in a circle, character stays centred",
-                   facecam["corner"])
-        else:
-            log.warn("Facecam option is on but no corner webcam was detected - using normal framing")
-    elif webcam_rect:
-        log.info("Webcam bubble detected - excluded from the crop so the character stays dominant")
-
-    ignore_rect = facecam if split_on else webcam_rect
-
-    # Always crop: the character fills the clip (or the gameplay panel in a
-    # split layout) instead of sharing it with the minimap, HUD and background.
-    if split_on:
-        gp = split_boxes_px["gameplay"]
-        crop_w, crop_h = crop_geometry(info.width, info.height, gp["w"], gp["h"])
+            log.info("Layout template: single video - centred crop (no subject tracking)")
+        decisions = [style.StyleDecision(
+            framing="layout", focus_x=0.5, focus_y=0.42,
+            reason="Layout template - video framing disabled", confidence=1.0,
+            source="manual", subject="layout template", locked=False)
+            for _ in moments]
     else:
-        crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
-    subject_track = track or {
-        "width": info.width, "height": info.height,
-        "samples": [], "sample_interval": 0.5,
-    }
+        # The game character is the main subject no matter what. Tracking can never
+        # be switched off by a stale setting: without a track there is no crop, and
+        # without a crop the character disappears into the whole-frame background.
+        log.info("Game-subject lock: tracking the character for every clip")
+        _report(progress, 53, "Tracking the game character for smart framing...")
+        cache = cfg.cache_dir / (video.stem + ".track.json")
+        track = faces.analyse_video(
+            video, cfg, log, cache_path=cache,
+            sample_interval=float(cfg.get("speed.face_interval", 0.5)),
+            max_seconds=analysis_seconds,
+        )
+        corner = str(cfg.get("video.facecam_corner", "auto") or "auto").lower()
+        webcam_rect = faces.find_facecam(track, corner=corner) if track else None
+        if split_on:
+            # Corner webcam first, otherwise a persistent face at the top of frame.
+            facecam = webcam_rect or (faces.find_speaker_facecam(track, corner=corner)
+                                      if track else None)
+            if facecam:
+                split_boxes_px = split_boxes(cfg, width, height)
+                log.ok("Split layout: speaker fills the top panel, gameplay tracked below")
+            else:
+                log.warn("Split layout needs a detected face - using the normal gameplay crop")
+                split_on = False
+                facecam_on = False
+                cfg.set("features.split_layout", False)  # keep captions on single frame too
+        elif facecam_on:
+            if webcam_rect:
+                facecam = webcam_rect
+                log.ok("Facecam found in the %s corner - webcam goes in a circle, "
+                       "character stays centred", facecam["corner"])
+            else:
+                log.warn("Facecam option is on but no corner webcam was detected - "
+                         "using normal framing")
+        elif webcam_rect:
+            log.info("Webcam bubble detected - excluded from the crop so the character "
+                     "stays dominant")
 
-    if provider != "local" and bool(cfg.get("ai.auto_style", True)):
-        _report(progress, 58, f"AI ({provider}) is locating the character in each clip...")
-    decisions = style.choose_styles(moments, track, cfg, log, info=info,
-                                    ignore_rect=ignore_rect)
+        ignore_rect = facecam if split_on else webcam_rect
+
+        # Always crop: the character fills the clip (or the gameplay panel in a
+        # split layout) instead of sharing it with the minimap, HUD and background.
+        if split_on:
+            gp = split_boxes_px["gameplay"]
+            crop_w, crop_h = crop_geometry(info.width, info.height, gp["w"], gp["h"])
+        else:
+            crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
+        subject_track = track or {
+            "width": info.width, "height": info.height,
+            "samples": [], "sample_interval": 0.5,
+        }
+
+        if provider != "local" and bool(cfg.get("ai.auto_style", True)):
+            _report(progress, 58, f"AI ({provider}) is locating the character in each clip...")
+        decisions = style.choose_styles(moments, track, cfg, log, info=info,
+                                        ignore_rect=ignore_rect)
 
     # 6. Render each clip ----------------------------------------------------
     out_root = Path(str(cfg.get("general.output_dir")))
@@ -225,15 +268,15 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             ass_path = None
 
         decision = decisions[index - 1]
-        # style.choose_styles already guarantees this; keep the hard lock here
-        # too so a future edit cannot silently reintroduce whole-frame clips.
-        clip_framing = "track"
+        # With tracking on, style.choose_styles guarantees a crop. With the
+        # toggle off, "layout" is a geometry-only centre crop - no subject path.
+        clip_framing = "layout" if layout_only else "track"
         focus_x, focus_y = decision.focus_x, decision.focus_y
         if facecam:
             # The speaker is in their own panel; the character owns the rest.
             focus_x, focus_y = 0.5, 0.45
         crop_x = crop_y = None
-        if crop_w and crop_h:
+        if not layout_only and crop_w and crop_h:
             path = faces.build_path(
                 subject_track, moment.start, moment.end, crop_w, crop_h, cfg,
                 focus_x=focus_x, focus_y=focus_y, ignore_rect=webcam_rect,
@@ -261,7 +304,8 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                 f"Signals     : {moment.reason}\n"
                 f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
                 f"({decision.source}: {decision.reason})\n"
-                f"Main subject: {decision.subject} (locked, {decision.locked})\n"
+                + (f"Framing     : disabled - layout template only\n" if layout_only
+                   else f"Main subject: {decision.subject} (locked, {decision.locked})\n")
                 + (f"Layout      : split screen - speaker top / gameplay bottom\n"
                    if split_on else
                    (f"Layout      : facecam bubble in top {facecam['corner']} corner, "

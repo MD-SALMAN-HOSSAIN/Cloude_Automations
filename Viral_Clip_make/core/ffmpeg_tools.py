@@ -317,7 +317,7 @@ class RenderRequest:
     source_info: MediaInfo | None = None
     cfg: object = None
     quiet: bool = False
-    framing: str | None = None  # fit_blur | fit_black | track (overrides config)
+    framing: str | None = None  # fit_blur | fit_black | track | layout (overrides config)
     facecam: dict | None = None  # webcam/speaker crop rect from faces
     split_layout: bool = False   # facecam above, tracked gameplay below
 
@@ -335,7 +335,7 @@ def render_clip(req: RenderRequest, log=None) -> dict:
     out_name = req.out_path.name
 
     framing = str(req.framing or cfg.get("video.framing", "fit_blur") or "fit_blur").lower()
-    if framing not in ("fit_blur", "fit_black", "track"):
+    if framing not in ("fit_blur", "fit_black", "track", "layout"):
         framing = "fit_blur"
     trim_chain = [
         f"trim=start={req.start:.3f}:end={req.end:.3f}",
@@ -415,7 +415,8 @@ def render_clip(req: RenderRequest, log=None) -> dict:
             log.info("Framing: whole frame visible (%s background)",
                      "blurred" if framing == "fit_blur" else "black")
     else:
-        # Subject-follow crop: fills the frame but necessarily cuts the sides.
+        # Fill-the-frame crop. "track" uses the subject path (crop_x/y); "layout"
+        # is the geometry-only version used when Video framing is switched off.
         crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
         x_expr, y_expr = _crop_xy_expr(req, info, crop_w, crop_h)
         crop_chain = [
