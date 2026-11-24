@@ -144,6 +144,8 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
 
     # 5. Framing -------------------------------------------------------------
     layout_only = not bool(cfg.get("video.framing_enabled", True))
+    character_lock = bool(cfg.get("features.face_track", True))
+    direct_framing = None
     track = None
     subject_track = None
     crop_w = crop_h = 0
@@ -171,10 +173,31 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             reason="Layout template - video framing disabled", confidence=1.0,
             source="manual", subject="layout template", locked=False)
             for _ in moments]
+    elif not character_lock:
+        # The toggle is now real: no AI style query, no local tracker, no tracked
+        # crop path. Use the selected Video framing mode as-is instead.
+        log.info("Character lock disabled — using Video framing without subject tracking")
+        _report(progress, 53, "Character lock off - using Video framing directly")
+        chosen = str(cfg.get("video.framing", "auto") or "auto").strip().lower()
+        if chosen not in ("auto", "track", "fit_blur", "fit_black"):
+            chosen = "auto"
+        direct_framing = "fit_blur" if chosen == "auto" else chosen
+        if split_on:
+            split_boxes_px = split_boxes(cfg, width, height)
+            facecam = _layout_facecam_rect(info)
+            log.ok("Layout template: split screen - facecam top / gameplay bottom "
+                   "(character lock off)")
+        else:
+            log.info("Framing: %s (character lock off, no subject tracking)",
+                     style.STYLE_LABELS.get(direct_framing, direct_framing))
+        decisions = [style.StyleDecision(
+            framing=direct_framing, focus_x=0.5, focus_y=0.42,
+            reason="Character lock disabled - no subject tracking", confidence=1.0,
+            source="manual", subject="none", locked=False)
+            for _ in moments]
     else:
-        # The game character is the main subject no matter what. Tracking can never
-        # be switched off by a stale setting: without a track there is no crop, and
-        # without a crop the character disappears into the whole-frame background.
+        # Character lock on: the game character is the main subject. Tracking is
+        # what keeps the crop on them instead of the HUD / background.
         log.info("Game-subject lock: tracking the character for every clip")
         _report(progress, 53, "Tracking the game character for smart framing...")
         cache = cfg.cache_dir / (video.stem + ".track.json")
@@ -270,13 +293,14 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         decision = decisions[index - 1]
         # With tracking on, style.choose_styles guarantees a crop. With the
         # toggle off, "layout" is a geometry-only centre crop - no subject path.
-        clip_framing = "layout" if layout_only else "track"
+        clip_framing = ("layout" if layout_only else
+                        (direct_framing if not character_lock else "track"))
         focus_x, focus_y = decision.focus_x, decision.focus_y
         if facecam:
             # The speaker is in their own panel; the character owns the rest.
             focus_x, focus_y = 0.5, 0.45
         crop_x = crop_y = None
-        if not layout_only and crop_w and crop_h:
+        if character_lock and not layout_only and crop_w and crop_h:
             path = faces.build_path(
                 subject_track, moment.start, moment.end, crop_w, crop_h, cfg,
                 focus_x=focus_x, focus_y=focus_y, ignore_rect=webcam_rect,
@@ -305,7 +329,9 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                 f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
                 f"({decision.source}: {decision.reason})\n"
                 + (f"Framing     : disabled - layout template only\n" if layout_only
-                   else f"Main subject: {decision.subject} (locked, {decision.locked})\n")
+                   else (f"Framing     : character lock off - {direct_framing}\n"
+                         if not character_lock else
+                         f"Main subject: {decision.subject} (locked, {decision.locked})\n"))
                 + (f"Layout      : split screen - speaker top / gameplay bottom\n"
                    if split_on else
                    (f"Layout      : facecam bubble in top {facecam['corner']} corner, "

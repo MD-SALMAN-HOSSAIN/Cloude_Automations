@@ -68,6 +68,45 @@ def test_layout_template_only_pipeline():
     print("PASS split render used Layout template only (no subject tracking)")
 
 
+def test_character_lock_off_pipeline():
+    work = Path(tempfile.mkdtemp(prefix="vcm_charlock_off_"))
+    source = make_test_video(work / "source.mp4", seconds=30)
+    cfg = Config(path=work / "settings.json")
+    cfg.set("whisper.model", "tiny")
+    cfg.set("general.min_seconds", 8)
+    cfg.set("general.max_seconds", 16)
+    cfg.set("general.clips_per_video", 1)
+    cfg.set("general.max_minutes", 1)
+    cfg.set("general.output_dir", str(work / "output"))
+    cfg.set("features.split_layout", False)
+    cfg.set("video.framing_enabled", True)
+    cfg.set("features.face_track", False)
+    cfg.set("video.framing", "fit_blur")
+
+    log, lines = _capture()
+    originals = (faces.analyse_video, faces.build_path,
+                 style.choose_styles, style._ai_decide)
+    faces.analyse_video = _blocked
+    faces.build_path = _blocked
+    style.choose_styles = _blocked
+    style._ai_decide = _blocked
+    try:
+        result = run_pipeline(str(source), cfg, log, lambda *_: None)
+    finally:
+        (faces.analyse_video, faces.build_path,
+         style.choose_styles, style._ai_decide) = originals
+
+    clips = result["clips"]
+    assert clips, "no clip was rendered with Character lock off"
+    assert all(c["style"] == "fit_blur" for c in clips), clips
+    assert all(Path(c["path"]).exists() for c in clips), clips
+    messages = [msg for _, msg in lines]
+    assert any("Character lock disabled — using Video framing without subject tracking" in m
+               for m in messages), messages
+    assert any("Framing: whole frame visible" in m for m in messages), messages
+    print("PASS Character lock off used Video framing directly (no subject tracking)")
+
+
 def test_ui_toggle_and_preset():
     import customtkinter as ctk
     from gui import main_window as window
@@ -83,6 +122,12 @@ def test_ui_toggle_and_preset():
         app = window.App(root)
         assert app.framing_toggle_var.get() is True
         assert app.framing_segments.cget("state") == "normal"
+        assert app.face_switch.cget("state") == "normal", "Character lock is still disabled"
+
+        app.face_var.set(False)
+        app._save_settings()
+        saved = json.loads(settings.read_text(encoding="utf-8"))
+        assert saved["features.face_track"] is False, saved
 
         app.framing_toggle_var.set(False)
         app._on_framing_toggle()
@@ -112,5 +157,6 @@ def test_ui_toggle_and_preset():
 
 if __name__ == "__main__":
     test_layout_template_only_pipeline()
+    test_character_lock_off_pipeline()
     test_ui_toggle_and_preset()
     print("framing toggle: all checks passed")

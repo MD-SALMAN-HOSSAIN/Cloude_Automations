@@ -506,11 +506,7 @@ class App:
                                    fg_color="#33394a")
             switch.pack(side="left", padx=(0, 18))
             if text == "Character lock":
-                # The game character must stay the subject no matter what, so
-                # tracking cannot be switched off by the user.
-                var.set(True)
-                self.face_var.set(True)
-                switch.configure(state="disabled")
+                self.face_switch = switch
 
         fc_row = ctk.CTkFrame(settings, fg_color="transparent")
         fc_row.pack(fill="x", padx=18, pady=(0, 8))
@@ -1005,16 +1001,21 @@ class App:
             self.cw_var.set(str(w))
             self.ch_var.set(str(h))
 
-    def _on_mode(self, _value=None):
+    def _sync_mode_settings(self):
+        """Apply mode-only render settings without overwriting manual toggles."""
         preset = MODES.get(MODE_LABELS.get(self.mode_var.get(), "balanced"), MODES["balanced"])
-        self.whisper_var.set(preset["whisper"])
-        self.face_var.set(preset["face"])
-        self.norm_var.set(preset["normalize"])
         self.cfg.set("video.crf", preset["crf"])
         self.cfg.set("video.preset", preset["preset"])
         self.cfg.set("general.download_height", preset["download_height"])
         self.cfg.set("speed.face_interval", preset["face_interval"])
         self.cfg.set("speed.candidates", preset["candidates"])
+        return preset
+
+    def _on_mode(self, _value=None):
+        preset = self._sync_mode_settings()
+        self.whisper_var.set(preset["whisper"])
+        self.face_var.set(preset["face"])
+        self.norm_var.set(preset["normalize"])
         self.mode_desc.configure(text=preset["desc"])
 
     # ------------------------------------------------------------------
@@ -1137,7 +1138,7 @@ class App:
             return float(default)
 
     def _save_settings(self):
-        self._on_mode()
+        self._sync_mode_settings()
         self.cfg.update({
             "general.clips_per_video": self._int(self.clips_var, 5),
             "general.min_seconds": self._int(self.min_var, 12),

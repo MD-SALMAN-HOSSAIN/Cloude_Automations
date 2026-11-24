@@ -107,9 +107,10 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
      With Video framing switched off, the same split boxes are used from geometry alone: a
      top-centre facecam region and a centred gameplay crop, with no face or character tracking.
    - **Output folder** — where finished clips are saved.
-   - Toggles for captions, hook overlay, audio normalization and **Facecam bubble**. Character
-     tracking stays on because it is required for the crop (the old face-tracking toggle no
-     longer switches it off).
+   - Toggles for captions, hook overlay, audio normalization, **Character lock** and
+     **Facecam bubble**. Character lock is a real switch: on tracks the game character and keeps
+     them as the main subject; off skips every tracker and uses the selected **Video framing**
+     mode as-is (with split-screen geometry when that template is active).
     - **Facecam bubble** (off by default) - for videos with a presenter webcam in a corner of
       the original frame (the popular gaming-shorts look). The tiny free face detector spots a
       small face that stays in one corner, then puts that person in a circular inset in the top
