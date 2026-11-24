@@ -119,6 +119,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                       "text": "", "language": None}
 
     # 4. Score moments -------------------------------------------------------
+    provider = str(cfg.get("ai.provider", "local") or "local").lower()
     rms = rms_curve(audio)
     moments = select_moments(transcript, rms, cfg, log, progress)
 
