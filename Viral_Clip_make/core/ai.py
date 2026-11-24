@@ -243,13 +243,17 @@ def _build_prompt(transcript: dict, cfg) -> str:
 
     return f"""You are a viral short-form video editor. Pick UP TO {wanted} moments from the
 transcript below that a stranger would watch to the end and send to a friend.
-Return FEWER, even ZERO, if fewer qualify. Never pad the list to reach {wanted}.
+Return fewer only when the video genuinely has fewer distinct beats. Always return
+at least one moment when the transcript contains speech or visible action; an empty
+array is only correct for a video with no usable content. Never pad the list to
+reach {wanted} with duplicate beats.
 
 Video duration: {duration:.1f} seconds. Each moment must be {min_len:.0f}-{max_len:.0f} seconds,
 inside 0 to {duration:.1f}, start and end on complete sentences, and use the SHORTEST
 window that tells the whole story (do not stretch to the maximum).
 
-A moment qualifies ONLY if ALL of these are true:
+The strongest moments satisfy ALL of these. If none are perfect, still return your
+best candidates and answer the flags honestly:
 1. PREMISE: in the first few seconds a stranger can name a concrete person, object,
    place, number or thing that is said or visible BEFORE the exciting beat.
    Shouting or a reaction with no named thing is not a moment.

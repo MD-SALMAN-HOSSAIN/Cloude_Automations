@@ -15,7 +15,11 @@ from core.util import Logger
 
 PAYLOAD = [
     {"start": 1.0, "end": 9.0, "title": "The AI Picked This Moment",
-     "hook": "WATCH THIS NOW", "reason": "strong hook", "score": 91},
+     "hook": "WATCH THIS NOW", "reason": "strong hook", "score": 91,
+     "premise": True, "payoff_in_last_40pct": True, "picture_first": True,
+     "visual_payoff": True, "standalone": True, "spoiler": False,
+     "scores": {"premise": 9, "payoff": 9, "hook": 9,
+                "picture": 8, "standalone": 9, "safety": 10}},
 ]
 
 

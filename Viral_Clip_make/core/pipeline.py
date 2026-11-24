@@ -30,6 +30,42 @@ def _report(progress, pct: float, message: str):
         progress(pct, message)
 
 
+def select_moments(transcript: dict, rms: list, cfg, log: Logger,
+                   progress=None) -> list:
+    """Combine AI and local picks without letting an empty answer abort the run.
+
+    Fallback order: AI picks -> strict local picks -> relaxed local picks.
+    A spoiler source is still rejected outright; everything else should yield
+    clips rather than a traceback.
+    """
+    provider = str(cfg.get("ai.provider", "local") or "local").lower()
+    if provider == "local":
+        _report(progress, 46, "Scoring viral moments locally (no API)...")
+    else:
+        _report(progress, 46, f"AI ({provider}) is choosing the strongest moments...")
+
+    moments = find_moments(transcript, rms, cfg, log)
+    ai_moments = ai.enhance_moments(transcript, moments, cfg, log, rms=rms)
+    # None = API failed / skipped: use the local picks. [] = the picker answered
+    # with nothing usable. Never make that fatal while local candidates exist -
+    # a strict prompt or a model returning an empty array must not abort the run.
+    if ai_moments:
+        moments = ai_moments
+    elif ai_moments is not None and moments:
+        log.warn("AI returned no usable picks - falling back to the local moment picker")
+    if not moments:
+        # Last resort: keep the best windows even if the strict premise /
+        # standalone checks found nothing. Spoilers stay excluded.
+        log.warn("Strict gate found no moments - trying a relaxed local pass")
+        moments = find_moments(transcript, rms, cfg, log, relaxed=True)
+    if not moments:
+        raise RuntimeError(
+            "No usable moment found in this video. Try a clip with visible action "
+            "and spoken reactions (not a spoiler recap, interview or narration-only video)."
+        )
+    return moments
+
+
 ASPECTS = {
     "9:16": (1080, 1920),
     "1:1": (1080, 1080),
@@ -83,25 +119,8 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                       "text": "", "language": None}
 
     # 4. Score moments -------------------------------------------------------
-    provider = str(cfg.get("ai.provider", "local") or "local").lower()
-    if provider == "local":
-        _report(progress, 46, "Scoring viral moments locally (no API)...")
-    else:
-        _report(progress, 46, f"AI ({provider}) is choosing the strongest moments...")
     rms = rms_curve(audio)
-    moments = find_moments(transcript, rms, cfg, log)
-    ai_moments = ai.enhance_moments(transcript, moments, cfg, log, rms=rms)
-    # None = API failed (local picks stand). [] = the picker answered but no
-    # moment passed the viral-quality gate: rendering the leftovers wastes an
-    # hour and produces clips nobody watches.
-    if ai_moments is not None:
-        moments = ai_moments
-    if not moments:
-        raise RuntimeError(
-            "No moment passed the viral-quality gate. A spoiler/recap, interview or "
-            "narration-only video has no visible payoff for a cold viewer. "
-            "Try gameplay with a named subject and a reaction you can see."
-        )
+    moments = select_moments(transcript, rms, cfg, log, progress)
 
     # 5. Game-subject framing -----------------------------------------------
     track = None

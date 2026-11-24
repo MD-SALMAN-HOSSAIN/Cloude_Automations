@@ -327,8 +327,14 @@ def score_window(transcript: dict, rms: list[float], start: float, end: float,
     return clamp(score, 0, 100), flags, sig
 
 
-def find_moments(transcript: dict, rms: list[float], cfg, log: Logger) -> list[Moment]:
-    """Pick the most engaging windows using only local signals - no AI API, no cost."""
+def find_moments(transcript: dict, rms: list[float], cfg, log: Logger,
+                 relaxed: bool = False) -> list[Moment]:
+    """Pick the most engaging windows using only local signals - no AI API, no cost.
+
+    ``relaxed`` is the last-resort pass: it keeps the best windows even when the
+    strict premise/standalone rules rejected everything. Spoilers are still
+    dropped, so a recap never sneaks back in through the fallback.
+    """
     words = transcript.get("words") or []
     segments = transcript.get("segments") or []
     duration = float(transcript.get("duration") or (words[-1]["end"] if words else 0))
@@ -373,7 +379,8 @@ def find_moments(transcript: dict, rms: list[float], cfg, log: Logger) -> list[M
     scored: list[Moment] = []
     for start, end in candidates:
         measured, flags, sig = score_window(transcript, rms, start, end, cfg, duration)
-        if flags["spoiler"] or not flags["premise"] or not flags["standalone"]:
+        if flags["spoiler"] or (not relaxed and (
+                not flags["premise"] or not flags["standalone"])):
             continue
 
         in_words = sig["words"]
@@ -417,6 +424,10 @@ def find_moments(transcript: dict, rms: list[float], cfg, log: Logger) -> list[M
 
     # Strongest moment first: clip 01 is the one people are most likely to share.
     picked.sort(key=lambda m: m.score, reverse=True)
-    log.ok("Selected %d local viral moments (top score %.1f/100)",
-           len(picked), picked[0].score if picked else 0)
+    if relaxed:
+        log.warn("Strict gate found no moments - keeping %d best available window(s) "
+                 "(top score %.1f/100)", len(picked), picked[0].score if picked else 0)
+    else:
+        log.ok("Selected %d local viral moments (top score %.1f/100)",
+               len(picked), picked[0].score if picked else 0)
     return picked

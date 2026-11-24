@@ -217,8 +217,10 @@ object or number a stranger can name before the exciting beat) and a **payoff th
 heard in the last 40 %** of the window. The opening must show the moment or a reacting face, the
 clip must stand alone, and two clips may not make the same point. Spoiler recaps / leak explainers
 ("GTA 6 has 12 endings", "the final mission", chapter-by-chapter retellings, director interviews)
-are rejected outright: those Shorts get no watch time and get taken down. If nothing qualifies,
-the app stops with an explanation instead of rendering ten weak clips.
+are rejected outright: those Shorts get no watch time and get taken down. If the AI returns no
+usable picks, the app falls back to the local picker; if the strict rules find nothing, a final
+relaxed pass keeps the best available windows. Only a source with no usable moment at all (for
+example a spoiler recap) stops with an explanation, so an empty AI answer can no longer abort a run.
 
 Clip length is capped at **22-35 seconds** even if the UI asks for more: a single beat that finishes
 beats a long setup. The AI's own 0-100 number is no longer trusted on its own - it is blended with
@@ -226,7 +228,8 @@ the measured signals using `moments.ai_weight` (default 0.6), and its sentence e
 properly (an end snaps to a segment **end**, never the next segment's start).
 
 `python viralchoicetest.py` replays the 22 Nov failure (ten ending-spoiler picks) and confirms
-every one is now rejected.
+every one is now rejected. `python fallbacktest.py` covers the 24 Nov failure where the AI answered
+with an empty array and the run aborted instead of using the local picks.
 
 ### AI-chosen clip style (best variant)
 
