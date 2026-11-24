@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+from .layout import DEFAULT_AI_PROMPT
 from .util import app_base_dir
 
 
@@ -23,8 +24,8 @@ def default_settings() -> dict:
     return {
         "general.output_dir": str(Path.home() / "Videos" / "Viral Clip Make Output"),
         "general.clips_per_video": 5,
-        "general.min_seconds": 12,
-        "general.max_seconds": 45,
+        "general.min_seconds": 10,
+        "general.max_seconds": 25,
         "general.language": "",
         "general.max_minutes": 45,
         "general.download_height": 720,
@@ -51,6 +52,13 @@ def default_settings() -> dict:
         "features.facecam_pip": False,
         "video.facecam_corner": "auto",   # auto | left | right
         "video.facecam_size": 0.30,        # bubble diameter / output width
+        # Split-screen gaming layout: facecam above, tracked gameplay below.
+        "features.split_layout": True,
+        "video.split_facecam_ratio": 0.33,   # fraction of canvas height
+        "video.split_gameplay_ratio": 0.57,
+        "video.split_gap_ratio": 0.015,
+        "style.caption_position": "seam",    # seam | lower_third (inside gameplay)
+        "style.watermark": "",               # e.g. twitch.tv/yourname
         "features.captions": True,
         "features.hook": True,
         "features.normalize_audio": True,
@@ -70,6 +78,7 @@ def default_settings() -> dict:
         "ai.base_url": "http://localhost:11434/v1",
         "ai.claude_base_url": "https://api.anthropic.com/v1",
         "ai.model": "gemini-3.5-flash-lite",
+        "ai.custom_prompt": DEFAULT_AI_PROMPT,
         # Output / quality
         "quality.mode": "balanced",      # fast | balanced | best
         "video.aspect": "9:16",          # 9:16 | 1:1 | 4:5 | 3:4 | 16:9 | custom
@@ -138,6 +147,11 @@ class Config:
                     if "ai.auto_style" not in saved and self.data.get("video.framing") in (
                             "fit_blur", "fit_black", "track"):
                         self.data["video.framing"] = "auto"
+                    # One-time upgrade to the split-screen Shorts recipe: the
+                    # new prompt is tuned for 10-25 s reaction moments.
+                    if "features.split_layout" not in saved:
+                        self.data["general.min_seconds"] = 10
+                        self.data["general.max_seconds"] = 25
         except Exception:
             pass
 

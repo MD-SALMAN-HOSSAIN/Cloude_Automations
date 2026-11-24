@@ -12,6 +12,7 @@ from .captions import build_ass, write_ass
 from .downloader import fetch
 from .ffmpeg_tools import (crop_geometry, facecam_layout, make_thumbnail, probe,
                            render_clip, RenderRequest)
+from .layout import split_boxes
 from .moments import find_moments
 from .transcribe import transcribe
 from .util import Logger
@@ -105,9 +106,11 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     # 5. Game-subject framing -----------------------------------------------
     track = None
     crop_w = crop_h = 0
-    facecam_on = bool(cfg.get("features.facecam_pip", False))
+    split_on = bool(cfg.get("features.split_layout", False))
+    facecam_on = split_on or bool(cfg.get("features.facecam_pip", False))
     facecam = None
     webcam_rect = None
+    split_boxes_px = None
     # The game character is the main subject no matter what. Tracking can never
     # be switched off by a stale setting: without a track there is no crop, and
     # without a crop the character disappears into the whole-frame background.
@@ -121,7 +124,19 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     )
     corner = str(cfg.get("video.facecam_corner", "auto") or "auto").lower()
     webcam_rect = faces.find_facecam(track, corner=corner) if track else None
-    if facecam_on:
+    if split_on:
+        # Corner webcam first, otherwise a persistent face at the top of frame.
+        facecam = webcam_rect or (faces.find_speaker_facecam(track, corner=corner)
+                                  if track else None)
+        if facecam:
+            split_boxes_px = split_boxes(cfg, width, height)
+            log.ok("Split layout: speaker fills the top panel, gameplay tracked below")
+        else:
+            log.warn("Split layout needs a detected face - using the normal gameplay crop")
+            split_on = False
+            facecam_on = False
+            cfg.set("features.split_layout", False)  # keep captions on the single frame too
+    elif facecam_on:
         if webcam_rect:
             facecam = webcam_rect
             log.ok("Facecam found in the %s corner - webcam goes in a circle, character stays centred",
@@ -131,9 +146,15 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     elif webcam_rect:
         log.info("Webcam bubble detected - excluded from the crop so the character stays dominant")
 
-    # Always crop: the character fills the vertical frame instead of sharing it
-    # with the minimap, HUD and scrolling background.
-    crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
+    ignore_rect = facecam if split_on else webcam_rect
+
+    # Always crop: the character fills the clip (or the gameplay panel in a
+    # split layout) instead of sharing it with the minimap, HUD and background.
+    if split_on:
+        gp = split_boxes_px["gameplay"]
+        crop_w, crop_h = crop_geometry(info.width, info.height, gp["w"], gp["h"])
+    else:
+        crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
     subject_track = track or {
         "width": info.width, "height": info.height,
         "samples": [], "sample_interval": 0.5,
@@ -142,7 +163,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     if provider != "local" and bool(cfg.get("ai.auto_style", True)):
         _report(progress, 58, f"AI ({provider}) is locating the character in each clip...")
     decisions = style.choose_styles(moments, track, cfg, log, info=info,
-                                    ignore_rect=webcam_rect)
+                                    ignore_rect=ignore_rect)
 
     # 6. Render each clip ----------------------------------------------------
     out_root = Path(str(cfg.get("general.output_dir")))
@@ -153,7 +174,11 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
     results = []
     total = len(moments)
     hook_margin = None
-    if facecam:
+    if split_on:
+        # Hook sits in the facecam panel; captions own the gameplay panel.
+        hook_margin = split_boxes_px["top_bar"] + int(
+            split_boxes_px["facecam"]["h"] * 0.05)
+    elif facecam:
         # Keep the hook below the circle instead of behind it.
         bubble = facecam_layout(cfg, facecam, width, height)
         hook_margin = bubble["y"] + bubble["size"] + max(16, int(width * 0.035))
@@ -185,7 +210,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
         clip_framing = "track"
         focus_x, focus_y = decision.focus_x, decision.focus_y
         if facecam:
-            # The webcam is an inset now: the game character owns the centre.
+            # The speaker is in their own panel; the character owns the rest.
             focus_x, focus_y = 0.5, 0.45
         crop_x = crop_y = None
         if crop_w and crop_h:
@@ -199,7 +224,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             source=video, start=moment.start, end=moment.end,
             out_path=out_path, captions_ass=ass_path,
             crop_x=crop_x, crop_y=crop_y, source_info=info, cfg=cfg,
-            framing=clip_framing, facecam=facecam,
+            framing=clip_framing, facecam=facecam, split_layout=split_on,
         )
         try:
             render_info = render_clip(req, log=log)
@@ -217,8 +242,10 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                 f"Clip style  : {style.STYLE_LABELS.get(clip_framing, clip_framing)} "
                 f"({decision.source}: {decision.reason})\n"
                 f"Main subject: {decision.subject} (locked, {decision.locked})\n"
-                + (f"Layout      : facecam bubble in top {facecam['corner']} corner, "
-                   f"subject centred\n" if facecam else "")
+                + (f"Layout      : split screen - speaker top / gameplay bottom\n"
+                   if split_on else
+                   (f"Layout      : facecam bubble in top {facecam['corner']} corner, "
+                    f"subject centred\n" if facecam else ""))
                 + f"Source      : {source}\n\n"
                 f"Description : {moment.title} — full video on the channel.\n\n"
                 f"#shorts #viral #clip #{_slug(moment.title).replace('-', '')}\n"
@@ -228,6 +255,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
                 json.dumps({"moment": moment.__dict__, "render": render_info,
                             "style": decision.as_dict(),
                             "facecam": facecam if facecam else None,
+                            "layout": "split" if split_on else "single",
                             "source": str(video), "made_with": "Viral Clip Make (100% free)"},
                            indent=2),
                 encoding="utf-8",
@@ -251,6 +279,7 @@ def run_pipeline(source: str, cfg, log: Logger, progress=None) -> dict:
             "duration": round(moment.end - moment.start, 1),
             "style": clip_framing,
             "style_reason": decision.reason,
+            "layout": "split" if split_on else "single",
         })
         log.ok("Clip %d/%d ready: %s (%s/100, %s)", index, total, name,
                moment.score, style.STYLE_LABELS.get(clip_framing, clip_framing))

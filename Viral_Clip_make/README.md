@@ -92,6 +92,14 @@ You can copy the whole `dist\ViralClipMake` folder to another Windows PC and it 
      the character per moment, and the free local tracker does the same when no API is configured.
      Even if you pick **Fit whole frame (blurred / black bars)** manually, it is upgraded to a
      character crop so the guarantee holds no matter what is selected.
+   - **Layout template** — **Split-screen gaming (facecam top)** is the default: the speaker
+     fills the top ~33% of the canvas and the tracked gameplay fills the bottom ~57%, with small
+     blurred safety bars at the very top and bottom for the Shorts UI. Set **Facecam height** /
+     **Gameplay height** (percent), choose captions at the split line or in the lower third of
+     gameplay, and type a channel handle (e.g. `twitch.tv/yourname`) to brand the top-left.
+     A corner webcam is detected automatically; otherwise a persistent face near the top of the
+     frame is used. With no detectable face the app falls back to the normal single-frame crop.
+     **Single video** restores the older one-panel look (with the optional corner bubble).
    - **Output folder** — where finished clips are saved.
    - Toggles for captions, hook overlay, audio normalization and **Facecam bubble**. Character
      tracking stays on because it is required for the crop (the old face-tracking toggle no
@@ -130,6 +138,10 @@ downloads the speech model once.
     that speaks the `/chat/completions` API.
   - Keys are stored only in `%APPDATA%\ViralClipMake\settings.json` on this PC. If the API fails or
     the key is empty, the app **automatically falls back to the free local moment picker**.
+- **Clip instructions / AI prompt** — the paste-ready prompt that tells the optional AI to pick
+  10–25 s high-energy reactions with a hook in the first 2 seconds and to style them as a 9:16
+  split-screen with bold uppercase captions and yellow action words. Editable and saved locally;
+  it is appended to the moment-selection prompt whenever a provider is configured.
 - **Check connection** — the green button in the AI card performs a real, lightweight live request to
   the configured provider and shows a colored status dot: **green = connected** (with response time
   in ms), **red = failed** (with the actual error, e.g. an invalid key or unreachable server). In

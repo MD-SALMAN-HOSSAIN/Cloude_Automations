@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from .layout import split_boxes
 from .util import app_base_dir, clamp, run, which
 
 _FFMPEG = None
@@ -201,6 +202,60 @@ def _facecam_chains(facecam: dict, layout: dict, src_w: int, src_h: int,
     ]
 
 
+def _crop_xy_expr(req, info, crop_w: int, crop_h: int) -> tuple[str, str]:
+    """Centred crop, overridden by the tracked path when it actually moves."""
+    max_x, max_y = max(0, info.width - crop_w), max(0, info.height - crop_h)
+    default_x, default_y = centered_crop_xy(info.width, info.height, crop_w, crop_h)
+    x_expr = f"{default_x:.2f}" if max_x > 0 else "0"
+    if req.crop_x and max_x > 0:
+        times, values = req.crop_x
+        values = [clamp(v, 0, max_x) for v in values]
+        if max(values) - min(values) >= 1.5:
+            x_expr = path_expression(times, values, "t")
+    y_expr = f"{default_y:.2f}" if max_y > 0 else "0"
+    if req.crop_y and max_y > 0:
+        times, values = req.crop_y
+        values = [clamp(v, 0, max_y) for v in values]
+        if max(values) - min(values) >= 1.5:
+            y_expr = path_expression(times, values, "t")
+    return x_expr, y_expr
+
+
+def _scale_into(box_w: int, box_h: int) -> str:
+    """Centre-crop a source region so it fills the output box exactly."""
+    return (f"scale={box_w}:{box_h}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={box_w}:{box_h},setsar=1")
+
+
+def _split_layout_chains(req, info, cam: dict, boxes: dict, base: str,
+                         fps: int, width: int, height: int) -> list[str]:
+    """FFmpeg chains for facecam-on-top / gameplay-below with blurred edge bars."""
+    fc = boxes["facecam"]
+    gp = boxes["gameplay"]
+    cw = max(2, int(float(cam["w"]) * info.width))
+    ch = max(2, int(float(cam["h"]) * info.height))
+    cw -= cw % 2
+    ch -= ch % 2
+    cx = int(clamp(float(cam["x"]) * info.width, 0, max(0, info.width - cw)))
+    cy = int(clamp(float(cam["y"]) * info.height, 0, max(0, info.height - ch)))
+
+    # Gameplay source crop follows the character; its shape is close to a square
+    # / 4:3 window before being centre-cropped into the lower panel.
+    src_cw, src_ch = crop_geometry(info.width, info.height, gp["w"], gp["h"])
+    x_expr, y_expr = _crop_xy_expr(req, info, src_cw, src_ch)
+
+    return [
+        f"[0:v]{base},split=3[bg][fpsrc][gpsrc]",
+        f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase:flags=bicubic,"
+        f"crop={width}:{height},boxblur=18:2,setsar=1[bgfit]",
+        f"[fpsrc]crop=w={cw}:h={ch}:x={cx}:y={cy},{_scale_into(fc['w'], fc['h'])}[fcfit]",
+        f"[gpsrc]crop=w={src_cw}:h={src_ch}:x='{x_expr}':y='{y_expr}',"
+        f"{_scale_into(gp['w'], gp['h'])}[gpfit]",
+        f"[bgfit][fcfit]overlay=x={fc['x']}:y={fc['y']}:shortest=1[splitbg]",
+        f"[splitbg][gpfit]overlay=x={gp['x']}:y={gp['y']}:shortest=1[fitv]",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Audio loudness
 # ---------------------------------------------------------------------------
@@ -263,7 +318,8 @@ class RenderRequest:
     cfg: object = None
     quiet: bool = False
     framing: str | None = None  # fit_blur | fit_black | track (overrides config)
-    facecam: dict | None = None  # corner webcam crop rect from faces.find_facecam()
+    facecam: dict | None = None  # webcam/speaker crop rect from faces
+    split_layout: bool = False   # facecam above, tracked gameplay below
 
 
 def render_clip(req: RenderRequest, log=None) -> dict:
@@ -308,11 +364,28 @@ def render_clip(req: RenderRequest, log=None) -> dict:
         cap_name = req.captions_ass.name.replace("\\", "/").replace(":", "\\:")
 
     cam = req.facecam
-    layout = facecam_layout(cfg, cam, width, height) if cam else None
+    boxes = split_boxes(cfg, width, height) if (req.split_layout and cam) else None
+    split = bool(boxes)
+    layout = facecam_layout(cfg, cam, width, height) if (cam and not split) else None
     chains: list[str] = []
     base = ",".join(trim_chain)
+    fallback_base = None
 
-    if framing in ("fit_blur", "fit_black"):
+    if split:
+        chains = _split_layout_chains(req, info, cam, boxes, base, fps,
+                                      width, height)
+        # A 3-way graph is heavier: keep a plain character crop as a fallback.
+        fcw, fch = crop_geometry(info.width, info.height, width, height)
+        fcx, fcy = _crop_xy_expr(req, info, fcw, fch)
+        fallback_base = (
+            f"[0:v]{base},crop=w={fcw}:h={fch}:x='{fcx}':y='{fcy}',"
+            f"scale={width}:{height}:flags=lanczos,setsar=1[fitv]"
+        )
+        if log:
+            log.info("Layout: split screen - facecam top %.0f%%, gameplay bottom %.0f%%",
+                     float(cfg.get("video.split_facecam_ratio", 0.33)) * 100,
+                     float(cfg.get("video.split_gameplay_ratio", 0.57)) * 100)
+    elif framing in ("fit_blur", "fit_black"):
         # Whole frame visible: scale it down to fit the vertical canvas and fill
         # the empty space (classic mobile gaming-shorts look). Nothing is cut.
         if framing == "fit_blur":
@@ -344,23 +417,7 @@ def render_clip(req: RenderRequest, log=None) -> dict:
     else:
         # Subject-follow crop: fills the frame but necessarily cuts the sides.
         crop_w, crop_h = crop_geometry(info.width, info.height, width, height)
-        max_x, max_y = max(0, info.width - crop_w), max(0, info.height - crop_h)
-        # Default to the middle of the source, never the top-left corner. A
-        # tracked path overrides this; with no track the character still stays
-        # the main subject instead of being cropped away.
-        default_x, default_y = centered_crop_xy(info.width, info.height, crop_w, crop_h)
-        x_expr = f"{default_x:.2f}" if max_x > 0 else "0"
-        if req.crop_x and max_x > 0:
-            times, values = req.crop_x
-            values = [clamp(v, 0, max_x) for v in values]
-            if max(values) - min(values) >= 1.5:
-                x_expr = path_expression(times, values, "t")
-        y_expr = f"{default_y:.2f}" if max_y > 0 else "0"
-        if req.crop_y and max_y > 0:
-            times, values = req.crop_y
-            values = [clamp(v, 0, max_y) for v in values]
-            if max(values) - min(values) >= 1.5:
-                y_expr = path_expression(times, values, "t")
+        x_expr, y_expr = _crop_xy_expr(req, info, crop_w, crop_h)
         crop_chain = [
             f"crop=w={crop_w}:h={crop_h}:x='{x_expr}':y='{y_expr}'",
             f"scale={width}:{height}:flags=lanczos",
@@ -372,31 +429,37 @@ def render_clip(req: RenderRequest, log=None) -> dict:
         else:
             chains.append("[0:v]" + ",".join(trim_chain + crop_chain) + "[fitv]")
 
-    plain_graph = ";".join(chains) + (";[fitv]format=yuv420p[v]" if not cap_name
-                                      else f";[fitv]subtitles=f={cap_name},format=yuv420p[v]")
-    sink = "[fitv]"
-    if cam:
+    tail = (f";[fitv]subtitles=f={cap_name},format=yuv420p[v]" if cap_name
+            else ";[fitv]format=yuv420p[v]")
+    plain_graph = ";".join(chains) + tail
+    if cam and not split:
         # Facecam last, so captions/hook stay on top of the bubble.
         chains.extend(_facecam_chains(cam, layout, info.width, info.height,
                                       duration, fps))
-        sink = "[fcv]"
         if log:
             log.info("Facecam: circular webcam in top %s corner, subject centred",
                      cam.get("corner", "right"))
-    chains.append(f"{sink}subtitles=f={cap_name},format=yuv420p[v]" if cap_name
-                  else f"{sink}format=yuv420p[v]")
-    graph = ";".join(chains)
+    video_tail = tail.replace("[fitv]", "[fcv]", 1) if (cam and not split) else tail
+    graph = ";".join(chains) + video_tail
+
     if info.has_audio:
-        graph += (
+        audio_part = (
             f";[0:a]atrim=start={req.start:.3f}:end={req.end:.3f},asetpts=PTS-STARTPTS,"
             f"aresample=48000,{pre_chain},{normalise},alimiter=limit=0.95,aresample=48000[a]"
         )
         maps = ["-map", "[v]", "-map", "[a]"]
         audio_args = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
     else:
-        graph += f";anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:{duration:.3f}[a]"
+        audio_part = (f";anullsrc=channel_layout=stereo:sample_rate=48000,"
+                      f"atrim=0:{duration:.3f}[a]")
         maps = ["-map", "[v]", "-map", "[a]"]
         audio_args = ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+
+    graph += audio_part
+    plain_graph += audio_part
+    fallback_graph = None
+    if fallback_base:
+        fallback_graph = fallback_base + tail + audio_part
 
     filter_file = work / "filter_graph.txt"
     filter_file.write_text(graph, encoding="utf-8")
@@ -421,7 +484,8 @@ def render_clip(req: RenderRequest, log=None) -> dict:
 
     out_file = work / out_name
     attempts = [encoder] if encoder == "libx264" else [encoder, "libx264"]
-    graphs = [graph, plain_graph] if cam else [graph]
+    fallback = fallback_graph or (plain_graph if cam else None)
+    graphs = [graph, fallback] if fallback else [graph]
     used = "libx264"
     success = False
     error_tail = ""
@@ -429,7 +493,7 @@ def render_clip(req: RenderRequest, log=None) -> dict:
         if variant:
             filter_file.write_text(use_graph, encoding="utf-8")
             if log:
-                log.warn("Facecam overlay failed - retrying the clip without it")
+                log.warn("Split/facecam layout failed - retrying with one gameplay frame")
         for attempt, enc in enumerate(attempts):
             if out_file.exists():
                 try:

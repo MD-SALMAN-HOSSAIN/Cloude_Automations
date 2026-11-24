@@ -15,6 +15,7 @@ from core.ai import GEMINI_DEFAULT_MODEL
 from core.config import Config
 from core.pipeline import run_pipeline
 from core.util import Logger
+from gui.sting import StingSplash, StingSuccess, StingToast
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -83,6 +84,28 @@ MODES = {
     },
 }
 
+# One-click "best settings for going viral". Saved as the user's default so
+# every future creation starts from the same strong setup.
+VIRAL_PRESET = {
+    "clips": 10,
+    "min_seconds": 12,
+    "max_seconds": 45,
+    "language": "",
+    "mode": "Best",
+    "whisper": "small",
+    "aspect": "9:16",
+    "framing": "AI picks best (recommended)",
+    "download_height": 1080,
+    "crf": 16,
+    "render_preset": "slow",
+    "face_interval": 0.35,
+    "candidates": 900,
+    "auto_style": True,
+}
+
+# ~1.55 s of animation + ~0.2 s fade + window reveal = about 2 seconds.
+BOOT_STING_MS = 1550
+
 
 class App:
     def __init__(self, root: ctk.CTk):
@@ -94,20 +117,127 @@ class App:
         self.publishing = False
         self.upload_checking = False
         self.result = None
+        self._success = None
         _init_fonts()
         self._build()
-        self._fade_in()
 
     # ------------------------------------------------------------------
-    def _fade_in(self, alpha: float = 0.0):
-        self.root.attributes("-alpha", min(1.0, alpha))
-        if alpha < 1.0:
-            self.root.after(20, lambda: self._fade_in(alpha + 0.09))
+    def reveal(self):
+        """Called by the boot sting: fade the real window in and sweep the header."""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-alpha", 0.0)
+            self._reveal_step(0)
+            self._animate_header_sweep(0)
+        except Exception:
+            try:
+                self.root.deiconify()
+            except Exception:
+                pass
+
+    def _reveal_step(self, step: int = 0):
+        try:
+            self.root.attributes("-alpha", min(1.0, step / 12.0))
+            if step < 12:
+                self.root.after(18, lambda: self._reveal_step(step + 1))
+        except Exception:
+            pass
+
+    def _animate_header_sweep(self, x: int = 0):
+        try:
+            self.header_canvas.coords(self.header_sweep, x, 84, x + 70, 93)
+            if x < 1200:
+                self.root.after(16, lambda: self._animate_header_sweep(x + 34))
+            else:
+                self.header_canvas.coords(self.header_sweep, -100, 84, -30, 93)
+        except Exception:
+            pass
+
+    def apply_viral_preset(self):
+        """Apply and save the one-click settings that give clips the best reach."""
+        self.clips_var.set(str(VIRAL_PRESET["clips"]))
+        self.min_var.set(str(VIRAL_PRESET["min_seconds"]))
+        self.max_var.set(str(VIRAL_PRESET["max_seconds"]))
+        self.lang_var.set(VIRAL_PRESET["language"])
+        self.mode_var.set(VIRAL_PRESET["mode"])
+        self._on_mode()
+        self.whisper_var.set(VIRAL_PRESET["whisper"])
+        self.face_var.set(True)
+        self.cap_var.set(True)
+        self.hook_var.set(True)
+        self.norm_var.set(True)
+        self.framing_var.set(VIRAL_PRESET["framing"])
+        self._on_framing()
+        self.aspect_var.set(VIRAL_PRESET["aspect"])
+        self._on_aspect()
+        self.cw_var.set("1080")
+        self.ch_var.set("1920")
+
+        self._save_settings()
+        self.cfg.update({
+            "general.download_height": VIRAL_PRESET["download_height"],
+            "video.crf": VIRAL_PRESET["crf"],
+            "video.preset": VIRAL_PRESET["render_preset"],
+            "speed.face_interval": VIRAL_PRESET["face_interval"],
+            "speed.candidates": VIRAL_PRESET["candidates"],
+            "ai.auto_style": VIRAL_PRESET["auto_style"],
+            "video.aspect": VIRAL_PRESET["aspect"],
+            "video.custom_width": 1080,
+            "video.custom_height": 1920,
+            "video.framing": FRAMING_LABELS[VIRAL_PRESET["framing"]],
+            "features.face_track": True,
+            "features.captions": True,
+            "features.hook": True,
+            "features.normalize_audio": True,
+        })
+        self.cfg.save()
+
+        self._log("OK", "BEST FOR VIRAL preset saved as default: 9:16, 1080p, "
+                        "captions + hook, face tracking, AI framing, 10 clips.")
+        self._pulse_button(getattr(self, "viral_btn", None))
+        self.saved_label.configure(text="✓ Viral preset is now the default")
+        self.root.after(2800, lambda: self.saved_label.configure(text=""))
+        if getattr(self, "signal_defaults", None) is not None:
+            self.signal_defaults.configure(text="Viral preset", text_color=GREEN)
+        try:
+            StingToast(self.root, "✓ BEST VIRAL SETTINGS SAVED")
+        except Exception:
+            pass
+
+    def _pulse_button(self, button, step: int = 0):
+        if button is None:
+            return
+        try:
+            button.configure(fg_color=PINK if step % 2 == 0 else PURPLE)
+            if step < 5:
+                self.root.after(120, lambda: self._pulse_button(button, step + 1))
+            else:
+                button.configure(fg_color=PURPLE)
+        except Exception:
+            pass
+
+    def _play_success_animation(self, count: int, output_dir: str):
+        try:
+            if self._success is not None:
+                try:
+                    self._success.close()
+                except Exception:
+                    pass
+            self._success = StingSuccess(
+                self.root, count, output_dir,
+                callback=lambda: setattr(self, "_success", None),
+            )
+        except Exception:
+            messagebox.showinfo(
+                "Done!",
+                f"Created {count} clips!\n\n{output_dir}\n\nOpen the folder to watch and upload them.",
+            )
 
     def _build(self):
         self.root.title("Viral Clip Make — Modern Free Shorts Maker")
-        self.root.geometry("1080x950")
-        self.root.minsize(980, 800)
+        self.root.geometry("1240x900")
+        self.root.minsize(1120, 820)
         self.root.configure(fg_color=BG)
         self.root.resizable(True, True)
 
@@ -133,11 +263,12 @@ class App:
         self._load_publish()
 
     def _header(self):
-        canvas = ctk.CTkCanvas(self.root, height=94, bg=BG, highlightthickness=0, bd=0)
+        canvas = self.header_canvas = ctk.CTkCanvas(
+            self.root, height=94, bg=BG, highlightthickness=0, bd=0)
         canvas.pack(fill="x")
         # subtle gradient glow behind the title
-        for i in range(90):
-            ratio = i / 89
+        for i in range(110):
+            ratio = i / 109
             r = int(0x17 + (0x24 - 0x17) * ratio)
             g = int(0x14 + (0x18 - 0x14) * ratio)
             b = int(0x26 + (0x33 - 0x26) * ratio)
@@ -149,13 +280,15 @@ class App:
                            text="Long video in. Viral vertical clips out. Free local engine, optional AI, any aspect ratio.",
                            fill=MUTED, font=("Segoe UI", 12))
         # gradient accent line
-        for i in range(180):
-            ratio = i / 179
+        for i in range(210):
+            ratio = i / 209
             r = int(0x7c + (0xff - 0x7c) * ratio)
             g = int(0x5c + (0x3d - 0x5c) * ratio)
             b = int(0xff + (0x6e - 0xff) * ratio)
             canvas.create_rectangle(i * 6, 86, i * 6 + 7, 91,
                                     fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
+        self.header_sweep = canvas.create_rectangle(
+            -100, 84, -30, 93, fill="#ffffff", outline="")
 
     def _card(self, parent, title: str):
         card = ctk.CTkFrame(parent, corner_radius=16, fg_color=CARD,
@@ -168,7 +301,17 @@ class App:
     def _make_tab(self):
         tab = self.tab_make
 
-        src = self._card(tab, "VIDEO SOURCE")
+        # Modern two-column workspace: controls on the left, live activity on
+        # the right.  The left side scrolls on smaller screens so nothing is
+        # hidden behind the log panel.
+        body = ctk.CTkFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=(4, 2), pady=(8, 4))
+        left = ctk.CTkScrollableFrame(body, fg_color="transparent")
+        left.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        right = ctk.CTkFrame(body, fg_color="transparent", width=360)
+        right.pack(side="right", fill="y", padx=(12, 2))
+
+        src = self._card(left, "VIDEO SOURCE")
         row = ctk.CTkFrame(src, fg_color="transparent")
         row.pack(fill="x", padx=18, pady=(4, 6))
         self.source_var = ctk.StringVar()
@@ -183,9 +326,26 @@ class App:
                       command=self.paste_link).pack(side="left")
         src.pack(fill="x", pady=(12, 10))
 
-        settings = self._card(tab, "QUICK SETTINGS")
+        settings = self._card(left, "QUICK SETTINGS")
         grid = ctk.CTkFrame(settings, fg_color="transparent")
         grid.pack(fill="x", padx=18, pady=(4, 8))
+
+        preset_row = ctk.CTkFrame(settings, corner_radius=12, fg_color=CARD2)
+        preset_row.pack(fill="x", padx=18, pady=(0, 8))
+        self.viral_btn = ctk.CTkButton(
+            preset_row, text="⚡ BEST SETTINGS FOR VIRAL", width=210, height=38,
+            corner_radius=10,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            fg_color=PURPLE, hover_color="#9178ff", text_color=TEXT,
+            command=self.apply_viral_preset,
+        )
+        self.viral_btn.pack(side="left", padx=(12, 12), pady=8)
+        ctk.CTkLabel(
+            preset_row,
+            text=("One click: 9:16 · 1080p · 10 clips · captions + hook · face tracking · "
+                  "AI framing. Saved as your default."),
+            font=FONT_SMALL, text_color=MUTED, wraplength=390, justify="left",
+        ).pack(side="left", pady=8)
 
         self.clips_var = ctk.StringVar(value=str(self.cfg.get("general.clips_per_video", 5)))
         self.min_var = ctk.StringVar(value=str(self.cfg.get("general.min_seconds", 12)))
@@ -225,7 +385,7 @@ class App:
             frame_row,
             text="AI picks best measures the subject per clip and chooses crop vs full frame "
                  "(uses your AI provider when set, otherwise the free local engine).",
-            font=FONT_SMALL, text_color=MUTED, wraplength=840, justify="left",
+            font=FONT_SMALL, text_color=MUTED, wraplength=650, justify="left",
         ).pack(anchor="w")
 
         out_row = ctk.CTkFrame(settings, fg_color="transparent")
@@ -257,13 +417,13 @@ class App:
         settings.pack(fill="x", pady=(0, 10))
 
         self.go_btn = ctk.CTkButton(
-            tab, text="MAKE VIRAL CLIPS", height=54, corner_radius=14,
+            left, text="MAKE VIRAL CLIPS", height=54, corner_radius=14,
             font=ctk.CTkFont(family="Segoe UI", size=17, weight="bold"),
             fg_color=PINK, hover_color=PINK_HOVER, command=self.start,
         )
         self.go_btn.pack(fill="x", pady=(2, 12))
 
-        prog = ctk.CTkFrame(tab, fg_color="transparent")
+        prog = ctk.CTkFrame(left, fg_color="transparent")
         prog.pack(fill="x", pady=(0, 8))
         self.progress = ctk.CTkProgressBar(prog, height=10, corner_radius=6,
                                            fg_color="#202634", progress_color=PINK)
@@ -273,11 +433,20 @@ class App:
                                    font=FONT_SMALL, text_color=MUTED)
         self.status.pack(side="right")
 
-        logcard = ctk.CTkFrame(tab, corner_radius=16, fg_color="#0b0e14",
+        # Right rail — live activity log plus a compact session readout.
+        logcard = ctk.CTkFrame(right, corner_radius=18, fg_color="#0b0e14",
                                border_width=1, border_color=BORDER)
         logcard.pack(fill="both", expand=True)
-        ctk.CTkLabel(logcard, text="ACTIVITY", font=FONT_TITLE,
-                     text_color=PURPLE).pack(anchor="w", padx=18, pady=(12, 2))
+        log_head = ctk.CTkFrame(logcard, fg_color="transparent")
+        log_head.pack(fill="x", padx=16, pady=(14, 4))
+        ctk.CTkLabel(log_head, text="ACTIVITY", font=FONT_TITLE,
+                     text_color=PURPLE).pack(side="left")
+        self.log_status = ctk.CTkLabel(log_head, text="● LIVE",
+                                       font=FONT_SMALL, text_color=GREEN)
+        self.log_status.pack(side="right")
+        ctk.CTkLabel(logcard, text="Render events stream here in real time.",
+                     font=FONT_SMALL, text_color=MUTED, wraplength=290,
+                     justify="left").pack(anchor="w", padx=16, pady=(0, 8))
         self.logbox = ctk.CTkTextbox(logcard, corner_radius=12, font=FONT_MONO,
                                      fg_color="#080a0f", text_color=TEXT)
         self.logbox.pack(fill="both", expand=True, padx=14, pady=(4, 14))
@@ -285,7 +454,28 @@ class App:
                            ("ERROR", RED), ("HEAD", PURPLE)):
             self.logbox.tag_config(tag, foreground=color)
 
-        bottom = ctk.CTkFrame(tab, fg_color="transparent")
+        signal = ctk.CTkFrame(right, corner_radius=16, fg_color=CARD,
+                              border_width=1, border_color=BORDER)
+        signal.pack(fill="x", pady=(12, 0))
+        ctk.CTkLabel(signal, text="SESSION", font=FONT_TITLE,
+                     text_color=PINK).pack(anchor="w", padx=16, pady=(12, 6))
+        self.signal_defaults = None
+        for caption, value, color in (
+            ("Engine", "Local · private", GREEN),
+            ("Output", "9:16 ready", PURPLE),
+            ("Defaults", "Balanced", MUTED),
+        ):
+            line = ctk.CTkFrame(signal, fg_color="transparent")
+            line.pack(fill="x", padx=16, pady=3)
+            ctk.CTkLabel(line, text=caption, font=FONT_SMALL,
+                         text_color=MUTED, width=72, anchor="w").pack(side="left")
+            value_label = ctk.CTkLabel(line, text=value, font=FONT_SMALL,
+                                       text_color=color, anchor="w")
+            value_label.pack(side="left")
+            if caption == "Defaults":
+                self.signal_defaults = value_label
+
+        bottom = ctk.CTkFrame(left, fg_color="transparent")
         bottom.pack(fill="x", pady=(10, 0))
         self.open_btn = ctk.CTkButton(bottom, text="Open output folder", height=38,
                                       corner_radius=10, fg_color=CARD2,
@@ -1166,11 +1356,8 @@ class App:
                     self.up_publish_btn.configure(state="normal",
                                                   text="Publish all without preview")
                     self._log("OK", f"Finished! {len(self.result['clips'])} clips in {self.result['output_dir']}")
-                    messagebox.showinfo(
-                        "Done!",
-                        f"Created {len(self.result['clips'])} clips!\n\n{self.result['output_dir']}\n\n"
-                        "Open the folder to watch and upload them.",
-                    )
+                    self._play_success_animation(
+                        len(self.result["clips"]), self.result["output_dir"])
                     if self.checking or self.upload_checking or self.publishing:
                         self.root.after(80, self._poll)
                     return
@@ -1366,7 +1553,34 @@ class PublishPreview(ctk.CTkToplevel):
         self.app.root.after(80, self.app._poll)
 
 
+_APP = None
+
+
 def launch():
+    """Show the neon boot sting while the app is constructed, then reveal it."""
+    global _APP
     root = ctk.CTk()
-    App(root)
+    root.withdraw()
+    try:
+        splash = StingSplash(root, min_duration_ms=BOOT_STING_MS)
+    except Exception:
+        splash = None
+
+    if splash is None:
+        _APP = App(root)
+        root.deiconify()
+        root.mainloop()
+        return
+
+    def _build():
+        global _APP
+        try:
+            app = App(root)
+            _APP = app  # keep every Tk variable alive for the whole session
+            splash.finish(app.reveal, min_delay_ms=120)
+        except Exception:
+            splash.finish(root.destroy)
+            raise
+
+    root.after(60, _build)
     root.mainloop()

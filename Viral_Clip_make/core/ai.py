@@ -231,6 +231,15 @@ def _build_prompt(transcript: dict, cfg) -> str:
         lines.append(line)
         used += len(line)
     transcript_text = "\n".join(lines) or transcript.get("text", "")
+    custom = str(cfg.get("ai.custom_prompt", "") or "").strip()
+    instructions = ""
+    if custom:
+        instructions = (
+            "\nCLIP STYLE INSTRUCTIONS (apply when choosing moments and writing titles):\n"
+            + custom
+            + "\nThe layout/caption parts describe the finished render; they do not change "
+              "the JSON format below.\n"
+        )
 
     return f"""You are a viral short-form video editor. Pick UP TO {wanted} moments from the
 transcript below that a stranger would watch to the end and send to a friend.
@@ -277,6 +286,7 @@ Return ONLY a JSON array, no markdown and no explanation, in this exact shape:
   "visual_payoff":true,"standalone":true,"spoiler":false,
   "scores":{{"premise":8,"payoff":9,"hook":8,"picture":7,"standalone":9,"safety":10}}}}]
 
+{instructions}
 TRANSCRIPT:
 {transcript_text}
 """

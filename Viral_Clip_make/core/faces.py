@@ -279,6 +279,62 @@ def find_facecam(track: dict, corner: str = "auto") -> dict | None:
     }
 
 
+def find_speaker_facecam(track: dict, corner: str = "auto") -> dict | None:
+    """Find the speaker for the split-screen top box.
+
+    A corner webcam wins when there is one. Otherwise a persistent face in the
+    upper part of the frame is treated as the presenter: gaming videos often put
+    the streamer at the top centre rather than in a corner. The returned rect is
+    a medium close-up (face plus shoulders), in source coordinates.
+    """
+    corner_cam = find_facecam(track, corner=corner)
+    if corner_cam:
+        return corner_cam
+
+    samples = track.get("samples") or []
+    if len(samples) < 4:
+        return None
+    src_w = float(track.get("width") or 1920)
+    src_h = float(track.get("height") or 1080)
+    faces = [s for s in samples
+             if s.get("face_x") is not None and (s.get("face_conf") or 0) >= 0.25
+             and (s.get("face_w") or 0) > 0 and (s.get("face_h") or 0) > 0
+             and float(s.get("face_y") or 0.45) < 0.60]
+    if len(faces) < max(3, int(len(samples) * 0.15)):
+        return None
+    if len(faces) < len(samples) * 0.40:
+        return None
+
+    cx = _median_num([float(s["face_x"]) for s in faces])
+    cy = _median_num([float(s.get("face_y") or 0.45) for s in faces])
+    near = [s for s in faces
+            if abs(float(s["face_x"]) - cx) <= 0.20
+            and abs(float(s.get("face_y") or 0.45) - cy) <= 0.22]
+    if len(near) < len(faces) * 0.70:
+        return None
+    cx = _median_num([float(s["face_x"]) for s in near])
+    cy = _median_num([float(s.get("face_y") or 0.45) for s in near])
+
+    face_px = _median_num([float(s["face_w"]) for s in near]) * src_w
+    face_py = _median_num([float(s["face_h"]) for s in near]) * src_h
+    side = max(face_px, face_py) * 2.3  # face + hair + shoulders
+    limit = min(src_w, src_h)
+    side = clamp(side, limit * 0.18, limit * 0.62)
+    x0 = clamp(cx * src_w - side / 2, 0, max(0, src_w - side))
+    y0 = clamp(cy * src_h - side / 2, 0, max(0, src_h - side))
+    times = [float(s.get("t", 0.0)) for s in samples]
+    mid = max(times) / 2.0 if times else 0.0
+    near_times = [float(s.get("t", 0.0)) for s in near]
+    if not any(t <= mid for t in near_times) or not any(t > mid for t in near_times):
+        return None
+    return {
+        "x": x0 / src_w, "y": y0 / src_h,
+        "w": side / src_w, "h": side / src_h,
+        "corner": "top", "cx": cx, "cy": cy,
+        "coverage": round(len(near) / len(samples), 3),
+    }
+
+
 def _inside(px: float, py: float, rect: dict | None) -> bool:
     return bool(rect and rect["x"] <= px <= rect["x"] + rect["w"]
                 and rect["y"] <= py <= rect["y"] + rect["h"])
